@@ -869,15 +869,39 @@
    * - Otherwise use the typeahead flow: pencil icon → search by name →
    *   select suggestion → type → send. profileSlug disambiguates duplicates.
    */
-  async function sendLinkedInMessage({ recipient, text, profileSlug, composePrefilled }) {
+  async function sendLinkedInMessage(payload) {
+    const { recipient, text, profileSlug, composePrefilled } = payload;
+
+    console.log(
+      '[LDMS] sendLinkedInMessage payload:',
+      JSON.stringify({
+        recipient,
+        textLength: text ? text.length : 0,
+        profileSlug: profileSlug || null,
+        composePrefilled: composePrefilled === true,
+        href: window.location.href
+      })
+    );
+
     if (!recipient || !text) {
       throw new Error('Recipient and message text are required.');
+    }
+
+    // Safety net: if we're on a compose URL with a profileUrn, the recipient
+    // is already pre-filled regardless of what the payload flag says.
+    const isComposeUrl =
+      window.location.href.includes('/messaging/compose') &&
+      window.location.href.includes('profileUrn');
+    const usePrefilledFlow = composePrefilled === true || isComposeUrl;
+
+    if (usePrefilledFlow) {
+      console.log('[LDMS] using pre-filled compose flow');
     }
 
     let lastError;
     for (let attempt = 0; attempt < CONFIG.retryAttempts; attempt++) {
       try {
-        if (composePrefilled) {
+        if (usePrefilledFlow) {
           // Compose URL flow: recipient pre-filled via profileUrn.
           await typeMessage(text);
           await clickSend();
