@@ -78,12 +78,18 @@ async function resetSendingMessages() {
 }
 
 /**
- * Dispatches a single message to a LinkedIn messaging tab.
+ * Dispatches a single message to a LinkedIn tab.
+ * If a profileUrl is present the tab is navigated to that profile first;
+ * otherwise the existing messaging flow is used.
  */
 async function dispatchMessage(message, settings) {
   let tab;
   try {
-    tab = await ensureMessagingTab();
+    if (message.profileUrl) {
+      tab = await ensureProfileTab(message.profileUrl);
+    } else {
+      tab = await ensureMessagingTab();
+    }
   } catch (err) {
     await markFailed(message.id, `Could not open LinkedIn tab: ${err.message}`);
     return;
@@ -95,6 +101,7 @@ async function dispatchMessage(message, settings) {
       payload: {
         recipient: message.recipient,
         text: message.text,
+        profileUrl: message.profileUrl || null,
         profileSlug: message.profileSlug || null
       }
     });
@@ -117,50 +124,82 @@ async function dispatchMessage(message, settings) {
  * Returns an existing LinkedIn messaging tab or creates one.
  */
 function ensureMessagingTab() {
-  return new Promise((resolve, reject) => {
-    chrome.tabs.query(
-      { url: ['https://www.linkedin.com/messaging/*'] },
-      (tabs) => {
-        if (tabs && tabs.length > 0) {
-          resolve(tabs[0]);
-          return;
-        }
+  return ensureLinkedInTab(LINKEDIN_MESSAGING_URL);
+}
 
-        let createdTabId = null;
+/**
+ * Navigates an existing LinkedIn tab (or creates one) to the profile URL and
+ * waits for the page to load before returning it.
+ */
+function ensureProfileTab(profileUrl) {
+  return ensureLinkedInTab(profileUrl, true);
+}
+
+/**
+ * Generic helper to get or create a LinkedIn tab at a specific URL.
+ */
+function ensureLinkedInTab(targetUrl, requireExactUrl = false) {
+  return new Promise((resolve, reject) => {
+    const queryUrl = requireExactUrl ? targetUrl : ['https://www.linkedin.com/*'];
+    chrome.tabs.query(
+      { url: queryUrl },
+      (tabs) => {
+        const usableTab =
+          tabs && tabs.find((t) => t.url && t.url.startsWith('https://www.linkedin.com/'));
+
+        let tabId = null;
         let resolved = false;
 
         const timeoutId = setTimeout(() => {
           if (!resolved) {
             resolved = true;
             chrome.tabs.onUpdated.removeListener(onUpdated);
-            reject(new Error('Timeout waiting for LinkedIn messaging tab to load'));
+            reject(new Error('Timeout waiting for LinkedIn tab to load'));
           }
         }, 30000);
 
-        const onUpdated = (tabId, changeInfo) => {
-          if (tabId !== createdTabId || changeInfo.status !== 'complete') return;
+        const onUpdated = (updatedTabId, changeInfo) => {
+          if (updatedTabId !== tabId || changeInfo.status !== 'complete') return;
           if (resolved) return;
           resolved = true;
           clearTimeout(timeoutId);
           chrome.tabs.onUpdated.removeListener(onUpdated);
           // Give the content script a moment to initialize.
-          setTimeout(() => resolve({ id: createdTabId }), 1500);
+          setTimeout(() => resolve({ id: tabId }), 1500);
         };
 
         chrome.tabs.onUpdated.addListener(onUpdated);
 
-        chrome.tabs.create({ url: LINKEDIN_MESSAGING_URL, active: false }, (tab) => {
-          if (chrome.runtime.lastError) {
-            if (!resolved) {
-              resolved = true;
-              clearTimeout(timeoutId);
-              chrome.tabs.onUpdated.removeListener(onUpdated);
-              reject(new Error(chrome.runtime.lastError.message));
+        const navigate = (id) => {
+          tabId = id;
+          chrome.tabs.update(id, { url: targetUrl, active: false }, () => {
+            if (chrome.runtime.lastError) {
+              if (!resolved) {
+                resolved = true;
+                clearTimeout(timeoutId);
+                chrome.tabs.onUpdated.removeListener(onUpdated);
+                reject(new Error(chrome.runtime.lastError.message));
+              }
             }
-            return;
-          }
-          createdTabId = tab.id;
-        });
+          });
+        };
+
+        if (usableTab) {
+          navigate(usableTab.id);
+        } else {
+          chrome.tabs.create({ url: targetUrl, active: false }, (createdTab) => {
+            if (chrome.runtime.lastError) {
+              if (!resolved) {
+                resolved = true;
+                clearTimeout(timeoutId);
+                chrome.tabs.onUpdated.removeListener(onUpdated);
+                reject(new Error(chrome.runtime.lastError.message));
+              }
+              return;
+            }
+            tabId = createdTab.id;
+          });
+        }
       }
     );
   });
@@ -191,7 +230,9 @@ async function markSent(message, settings) {
         timezone: message.timezone,
         recurrence: message.recurrence,
         scheduledAt: nextScheduledAt,
-        status: 'pending'
+        status: 'pending',
+        profileUrl: message.profileUrl || null,
+        profileSlug: message.profileSlug || null
       });
     }
   }

@@ -1,13 +1,14 @@
 /**
  * Content script for LinkedIn messaging automation.
- * Injected into https://www.linkedin.com/messaging/*
+ * Runs on LinkedIn pages (messaging, profiles, etc.).
  *
- * Correct send flow (executed in order):
- * 1. Click the pencil/compose button in the messaging sidebar.
- * 2. Wait for the new-message overlay's recipient typeahead input and type the name.
- * 3. Wait for autocomplete suggestions and click the matching person.
- * 4. Wait for the message composer and type the message.
- * 5. Click the send button.
+ * Two supported send flows:
+ * 1. Profile-URL flow (preferred): when a profileUrl is provided, the background
+ *    worker navigates to the profile page. This script clicks the Message button,
+ *    waits for the inline conversation overlay, types the message, and sends.
+ * 2. Compose/typeahead flow (fallback): when no profileUrl is provided, this
+ *    script opens the new-message overlay, searches by name, selects the person,
+ *    types the message, and sends.
  */
 
 (function () {
@@ -18,19 +19,27 @@
   window.__linkedinDmSchedulerInjected = true;
 
   const SELECTORS = {
+    // Profile page Message button.
+    profileMessageButton: [
+      'button:has(svg#send-privately-small)',
+      'button:has(svg use[href*="send-privately"])',
+      'a:has(svg#send-privately-small)',
+      'a:has(svg use[href*="send-privately"])',
+      'svg#send-privately-small',
+      'svg use[href*="send-privately"]'
+    ],
+    // Compose/typeahead flow selectors.
     composeButton: [
       'button:has(svg use[href="#compose-medium"])',
       'button:has(svg use[href*="compose"])',
       'button svg use[href="#compose-medium"]',
       'button svg use[href*="compose"]',
-      'button svg use[href*="open-in-new"]',
       'li-icon[type="compose-medium"]',
       'button[aria-label^="Compose a new message" i]',
       'button[aria-label*="New message" i]',
       'button[aria-label*="Compose" i]',
       'a[aria-label*="Compose" i]',
       'button[data-testid="compose-button"]',
-      'button[data-test-icon-name="compose"]',
       '.msg-overlay-list-bubble__compose-button',
       '.msg-overlay-bubble-header__controls button',
       '.msg-overlay-bubble-header__control',
@@ -60,8 +69,10 @@
       '.artdeco-pill',
       '[data-testid="recipient-pill"]'
     ],
+    // Message composer (used by both flows once the composer is open).
     messageInput: [
-      'div.msg-form__contenteditable',
+      'div.msg-form__contenteditable[contenteditable="true"][aria-label*="Write a message" i]',
+      'div.msg-form__contenteditable[contenteditable="true"]',
       '.msg-form__contenteditable',
       '.msg-overlay-conversation-bubble .msg-form__contenteditable',
       '.msg-overlay-conversation-bubble [contenteditable="true"]',
@@ -259,8 +270,34 @@
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // PROFILE-URL FLOW
+  // ---------------------------------------------------------------------------
+
   /**
-   * STEP 1: Click the pencil/compose button to open the new-message overlay.
+   * Click the Message button on a LinkedIn profile page.
+   */
+  async function clickProfileMessageButton() {
+    let messageBtn;
+    try {
+      messageBtn = await waitForSelector(SELECTORS.profileMessageButton, 8000);
+    } catch {
+      messageBtn = findButtonByLabel('message');
+    }
+    if (!messageBtn) {
+      throw new Error('Could not find the Message button on the profile page');
+    }
+    clickElement(messageBtn);
+    // Wait for the inline message overlay to open.
+    await wait(1500);
+  }
+
+  // ---------------------------------------------------------------------------
+  // COMPOSE / TYPEAHEAD FLOW (fallback when no profileUrl)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * STEP 1 (fallback): Click the pencil/compose button to open the new-message overlay.
    */
   async function clickComposeButton() {
     // If the overlay is already open, do not click compose again (avoids closing it).
@@ -295,8 +332,7 @@
   }
 
   /**
-   * STEP 2: Type the recipient name into the new-message typeahead input.
-   * Returns the input element so step 3 can dispatch Enter on it.
+   * STEP 2 (fallback): Type the recipient name into the new-message typeahead input.
    */
   async function typeRecipientName(recipient) {
     const input = await waitForSelector(SELECTORS.recipientTypeaheadInput, 8000);
@@ -307,18 +343,16 @@
   }
 
   /**
-   * STEP 3: Select an autocomplete suggestion.
+   * STEP 3 (fallback): Select an autocomplete suggestion.
    * - If a profileSlug is provided, navigate to the suggestion whose link/data
    *   contains that slug and press Enter.
    * - Otherwise press Enter to accept the first suggestion.
-   * - Falls back to clicking a visible suggestion if keyboard selection fails.
    */
   async function selectRecipientSuggestion(recipient, profileSlug, input) {
     if (!input) {
       input = await waitForSelector(SELECTORS.recipientTypeaheadInput, 2000);
     }
 
-    // Ensure suggestions have rendered before interacting with them.
     const suggestions = await waitForSuggestions(5000);
 
     let target;
@@ -327,20 +361,16 @@
     }
 
     if (target) {
-      // Matched by profile slug: arrow-key down to the target and press Enter.
       const selectedByKeyboard = await selectSuggestionByKeyboard(input, suggestions, target);
       if (!selectedByKeyboard) {
         clickElement(target);
       }
     } else if (profileSlug) {
-      // A profile slug was provided but no match was found; warn but still fall
-      // back to selecting the first suggestion so the flow does not hard-fail.
       console.warn(
         `[LinkedIn DM Scheduler] No suggestion matched slug "${profileSlug}". Falling back to first result.`
       );
       dispatchEnterKey(input);
     } else {
-      // No slug provided: press Enter to accept the first suggestion.
       dispatchEnterKey(input);
     }
 
@@ -348,7 +378,6 @@
     let pill = await waitForRecipientPill(recipient, 5000).catch(() => null);
 
     if (!pill) {
-      // Fallback: click the first visible suggestion.
       const fallback = suggestions[0] || findAnyVisibleSuggestion();
       if (!fallback) {
         throw new Error(`No autocomplete suggestions available for "${recipient}"`);
@@ -360,13 +389,9 @@
       }
     }
 
-    // Wait for the composer to become ready now that the recipient is selected.
     await wait(800);
   }
 
-  /**
-   * Wait for suggestion option elements to appear in the DOM.
-   */
   async function waitForSuggestions(timeout = 5000) {
     const start = Date.now();
     return new Promise((resolve, reject) => {
@@ -386,10 +411,6 @@
     });
   }
 
-  /**
-   * Collect suggestion option elements from known selectors and from the
-   * listbox referenced by the typeahead input's aria-owns/aria-controls.
-   */
   function getAllSuggestions() {
     const fromSelectors = Array.from(
       document.querySelectorAll(SELECTORS.recipientSuggestions.join(', '))
@@ -410,9 +431,7 @@
       }
     }
 
-    // Prefer options that actually look like suggestions and are visible.
     const combined = [...fromSelectors, ...fromListboxes].filter((el) => isVisible(el));
-    // Deduplicate by element reference.
     return Array.from(new Set(combined));
   }
 
@@ -420,21 +439,15 @@
     return getAllSuggestions()[0] || null;
   }
 
-  /**
-   * Return the suggestion element whose link or data attributes contain the
-   * given LinkedIn profile slug.
-   */
   function findSuggestionBySlug(suggestions, slug) {
     const lowerSlug = slug.toLowerCase();
     return (
       suggestions.find((el) => {
-        // Check anchor hrefs inside the suggestion.
         const link = el.closest('a') || el.querySelector('a');
         if (link) {
           const href = (link.getAttribute('href') || '').toLowerCase();
           if (href.includes(`/in/${lowerSlug}`)) return true;
         }
-        // Check data attributes and text content.
         const attrs = Array.from(el.attributes)
           .map((attr) => attr.value.toLowerCase())
           .join(' ');
@@ -444,16 +457,11 @@
     );
   }
 
-  /**
-   * Use ArrowDown keyboard navigation to move the selection to the target
-   * suggestion, then press Enter.
-   */
   async function selectSuggestionByKeyboard(input, suggestions, target) {
     const index = Array.from(suggestions).indexOf(target);
     if (index < 0) return false;
 
     input.focus();
-    // Press ArrowDown enough times to reach the target option.
     const downCount = index + 1;
     for (let i = 0; i < downCount; i++) {
       dispatchKey(input, 'ArrowDown', 40);
@@ -463,9 +471,6 @@
     return true;
   }
 
-  /**
-   * Dispatch a keyboard event on an element.
-   */
   function dispatchKey(el, key, keyCode) {
     const events = ['keydown', 'keypress', 'keyup'];
     for (const type of events) {
@@ -482,36 +487,20 @@
     }
   }
 
-  /**
-   * Dispatch Enter keyboard events on an element.
-   */
   function dispatchEnterKey(el) {
     dispatchKey(el, 'Enter', 13);
   }
 
-  /**
-   * Wait for a recipient pill containing the recipient name to appear.
-   */
   function waitForRecipientPill(recipient, timeout = 5000) {
     return waitForElementWithText(SELECTORS.recipientPill, recipient, timeout);
   }
 
-  /**
-   * Helper: locate the suggestions menu via the typeahead's ARIA attributes.
-   * Kept as a last-resort fallback.
-   */
-  function findSuggestionInLinkedListbox(recipient) {
-    const suggestions = getAllSuggestions();
-    const lower = recipient.toLowerCase();
-    return (
-      suggestions.find((option) =>
-        option.textContent.toLowerCase().includes(lower)
-      ) || null
-    );
-  }
+  // ---------------------------------------------------------------------------
+  // SHARED COMPOSER STEPS
+  // ---------------------------------------------------------------------------
 
   /**
-   * STEP 4: Type the message into the composer.
+   * Type the message into the composer.
    */
   async function typeMessage(text) {
     const input = await waitForSelector(SELECTORS.messageInput, 8000);
@@ -520,7 +509,7 @@
   }
 
   /**
-   * STEP 5: Click the send button.
+   * Click the send button once it is enabled.
    */
   async function clickSend() {
     let sendBtn;
@@ -532,12 +521,11 @@
     if (!sendBtn) {
       throw new Error('Could not find the send button');
     }
-    if (sendBtn.disabled) {
-      // Wait briefly in case the button is still enabling.
-      await wait(1500);
-      if (sendBtn.disabled) {
-        throw new Error('Send button is disabled');
-      }
+
+    // Wait until LinkedIn enables the button.
+    const enabled = await waitForEnabled(sendBtn, 5000);
+    if (!enabled) {
+      throw new Error('Send button remained disabled');
     }
 
     await randomDelay(400);
@@ -546,9 +534,29 @@
   }
 
   /**
-   * Send a LinkedIn DM by executing the 5-step flow in order with retries.
+   * Wait for an element to become enabled (no disabled attribute/property).
    */
-  async function sendLinkedInMessage({ recipient, text, profileSlug }) {
+  async function waitForEnabled(el, timeout = 5000) {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      if (!el.disabled && !el.hasAttribute('disabled')) {
+        return true;
+      }
+      await wait(250);
+    }
+    return false;
+  }
+
+  // ---------------------------------------------------------------------------
+  // ENTRY POINT
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Send a LinkedIn DM.
+   * Uses the profile-URL flow when profileUrl is provided; otherwise falls back
+   * to the compose/typeahead flow.
+   */
+  async function sendLinkedInMessage({ recipient, text, profileUrl, profileSlug }) {
     if (!recipient || !text) {
       throw new Error('Recipient and message text are required.');
     }
@@ -556,12 +564,16 @@
     let lastError;
     for (let attempt = 0; attempt < CONFIG.retryAttempts; attempt++) {
       try {
-        await clickComposeButton();
-        const recipientInput = await typeRecipientName(recipient);
-        await selectRecipientSuggestion(recipient, profileSlug || null, recipientInput);
+        if (profileUrl) {
+          await clickProfileMessageButton();
+        } else {
+          await clickComposeButton();
+          const recipientInput = await typeRecipientName(recipient);
+          await selectRecipientSuggestion(recipient, profileSlug || null, recipientInput);
+        }
+
         await typeMessage(text);
         await clickSend();
-        // Give LinkedIn time to process the send and update the UI.
         await wait(1500);
         return;
       } catch (err) {
