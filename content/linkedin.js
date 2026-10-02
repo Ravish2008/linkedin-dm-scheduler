@@ -197,6 +197,9 @@
 
   /**
    * Simulate typing into a contenteditable or input element.
+   * For LinkedIn's contenteditable composer we use document.execCommand so
+   * the internal editor registers the input, hides the placeholder, and
+   * enables the send button.
    */
   async function simulateTyping(el, text) {
     if (!el) throw new Error('Cannot type into null element');
@@ -204,26 +207,50 @@
     el.click();
 
     if (el.isContentEditable) {
-      el.innerHTML = '';
-      el.textContent = text;
-    } else {
-      el.value = text;
-    }
+      // Select existing contents so insertText replaces them.
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      selection.removeAllRanges();
+      selection.addRange(range);
 
-    const events = ['focus', 'input', 'change', 'keyup'];
-    for (const type of events) {
-      let event;
-      if (type === 'input') {
-        event = new InputEvent('input', {
+      const inserted = document.execCommand('insertText', false, text);
+      if (!inserted) {
+        // Fallback for environments where execCommand is unavailable.
+        el.textContent = text;
+      }
+
+      // Safety-net events to ensure LinkedIn updates its state.
+      el.dispatchEvent(
+        new InputEvent('input', {
           bubbles: true,
           cancelable: true,
           inputType: 'insertText',
           data: text
-        });
-      } else {
-        event = new Event(type, { bubbles: true, cancelable: true });
+        })
+      );
+      el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+      el.dispatchEvent(
+        new KeyboardEvent('keyup', { bubbles: true, cancelable: true })
+      );
+    } else {
+      el.value = text;
+
+      const events = ['focus', 'input', 'change', 'keyup'];
+      for (const type of events) {
+        let event;
+        if (type === 'input') {
+          event = new InputEvent('input', {
+            bubbles: true,
+            cancelable: true,
+            inputType: 'insertText',
+            data: text
+          });
+        } else {
+          event = new Event(type, { bubbles: true, cancelable: true });
+        }
+        el.dispatchEvent(event);
       }
-      el.dispatchEvent(event);
     }
 
     // Mimic human typing speed for longer messages.
