@@ -67,15 +67,22 @@
     ],
     // Message composer (used by both flows once the composer is open).
     messageInput: [
+      '.msg-overlay-conversation-bubble div.msg-form__contenteditable[contenteditable="true"]',
       'div.msg-form__contenteditable[contenteditable="true"][aria-label*="Write a message" i]',
+      'div.msg-form__contenteditable[contenteditable="true"][aria-label*="Write a message"]',
       'div.msg-form__contenteditable[contenteditable="true"]',
       '.msg-form__contenteditable',
-      '.msg-overlay-conversation-bubble .msg-form__contenteditable',
       '.msg-overlay-conversation-bubble [contenteditable="true"]',
       'div[contenteditable="true"][role="textbox"]',
       'div[contenteditable="true"]'
     ],
+    overlayContainer: [
+      '.msg-overlay-conversation-bubble',
+      '.msg-convo-wrapper',
+      '.msg-overlay'
+    ],
     sendButton: [
+      '.msg-overlay-conversation-bubble button.msg-form__send-button[type="submit"]',
       "button.msg-form__send-button[type='submit']",
       'button[type="submit"].msg-form__send-button',
       'button.msg-form__send-button',
@@ -303,8 +310,8 @@
     }
 
     clickElement(messageBtn);
-    // Wait for the inline message overlay to open.
-    await wait(1500);
+    // Wait for the inline message overlay and its composer to fully render.
+    await wait(3500);
   }
 
   function findProfileMessageButton() {
@@ -541,11 +548,82 @@
   // SHARED COMPOSER STEPS
   // ---------------------------------------------------------------------------
 
+  function findComposerInOverlay() {
+    // Search inside the overlay container first.
+    for (const containerSelector of SELECTORS.overlayContainer) {
+      const container = document.querySelector(containerSelector);
+      if (!container) continue;
+      for (const inputSelector of SELECTORS.messageInput) {
+        const parts = inputSelector.split(' ');
+        // If the selector already scopes inside the overlay, query globally.
+        const selector = parts[0].startsWith('.msg-overlay-conversation-bubble')
+          ? inputSelector
+          : `${containerSelector} ${inputSelector}`;
+        try {
+          const el = document.querySelector(selector);
+          if (el && isVisible(el)) return el;
+        } catch {
+          // Invalid selector combination; skip.
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Wait for the message composer to appear.
+   * - Polls up to 15 seconds.
+   * - First looks inside any visible overlay bubble.
+   * - Falls back to the broader selector list.
+   */
+  async function waitForComposer(timeout = 15000) {
+    const start = Date.now();
+    return new Promise((resolve, reject) => {
+      function search() {
+        const overlayComposer = findComposerInOverlay();
+        if (overlayComposer) {
+          resolve(overlayComposer);
+          return;
+        }
+
+        try {
+          const broad = waitForSelectorSync(SELECTORS.messageInput);
+          if (broad && isVisible(broad)) {
+            resolve(broad);
+            return;
+          }
+        } catch {
+          // ignore
+        }
+
+        if (Date.now() - start > timeout) {
+          reject(new Error('Timed out waiting for the message composer'));
+          return;
+        }
+        setTimeout(search, 500);
+      }
+      search();
+    });
+  }
+
+  function waitForSelectorSync(selectors) {
+    const arr = Array.isArray(selectors) ? selectors : [selectors];
+    for (const selector of arr) {
+      try {
+        const el = document.querySelector(selector);
+        if (el) return el;
+      } catch {
+        // invalid selector
+      }
+    }
+    return null;
+  }
+
   /**
    * Type the message into the composer.
    */
   async function typeMessage(text) {
-    const input = await waitForSelector(SELECTORS.messageInput, 8000);
+    const input = await waitForComposer(15000);
     await simulateTyping(input, text);
     await wait(600);
   }
@@ -556,7 +634,7 @@
   async function clickSend() {
     let sendBtn;
     try {
-      sendBtn = await waitForSelector(SELECTORS.sendButton, 8000);
+      sendBtn = await waitForSelector(SELECTORS.sendButton, 15000);
     } catch {
       sendBtn = findButtonByLabel('send message') || findButtonByLabel('send');
     }
