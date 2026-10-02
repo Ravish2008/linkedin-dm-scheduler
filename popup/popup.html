@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LinkedIn DM Scheduler</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body class="light">
+  <header class="app-header">
+    <img src="../assets/icons/icon48.svg" alt="" class="app-logo" />
+    <div class="app-title">
+      <h1>LinkedIn DM Scheduler</h1>
+      <span class="app-subtitle">Schedule messages, automatically delivered.</span>
+    </div>
+  </header>
+
+  <nav class="tab-nav" aria-label="Main tabs">
+    <button class="tab-btn active" data-tab="schedule">Schedule</button>
+    <button class="tab-btn" data-tab="queue">Queue</button>
+    <button class="tab-btn" data-tab="templates">Templates</button>
+    <button class="tab-btn" data-tab="history">History</button>
+    <button class="tab-btn" data-tab="settings">Settings</button>
+  </nav>
+
+  <main class="tab-content">
+    <!-- Schedule Tab -->
+    <section id="schedule" class="tab-panel active">
+      <form id="schedule-form" class="stack">
+        <input type="hidden" id="edit-id" />
+
+        <div class="field">
+          <label for="template-select">Use template (optional)</label>
+          <select id="template-select">
+            <option value="">-- No template --</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="recipient">Recipient</label>
+          <input
+            type="text"
+            id="recipient"
+            name="recipient"
+            list="recipient-list"
+            placeholder="Start typing a connection name"
+            autocomplete="off"
+            required
+          />
+          <datalist id="recipient-list"></datalist>
+          <button type="button" id="refresh-connections" class="text-btn">
+            Refresh contacts from LinkedIn
+          </button>
+        </div>
+
+        <div class="field">
+          <label for="message">Message</label>
+          <textarea
+            id="message"
+            name="message"
+            rows="5"
+            placeholder="Write your message... Use {name}, {company}, etc."
+            required
+          ></textarea>
+          <p class="hint">Placeholders: type {name}, {company} and set their values below.</p>
+        </div>
+
+        <div id="placeholder-fields"></div>
+
+        <div class="field-row">
+          <div class="field">
+            <label for="datetime">Date &amp; Time</label>
+            <input type="datetime-local" id="datetime" name="datetime" required />
+          </div>
+
+          <div class="field">
+            <label for="timezone">Timezone</label>
+            <select id="timezone" name="timezone"></select>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="recurrence">Recurrence</label>
+          <select id="recurrence" name="recurrence">
+            <option value="none">One-time</option>
+            <option value="weekly">Weekly</option>
+            <option value="monthly">Monthly</option>
+          </select>
+        </div>
+
+        <div class="form-actions">
+          <button type="submit" class="btn-primary">Save Message</button>
+          <button type="button" id="cancel-edit" class="btn-secondary hidden">Cancel</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Queue Tab -->
+    <section id="queue" class="tab-panel">
+      <div class="section-header">
+        <h2>Pending Messages</h2>
+        <span id="queue-count" class="badge">0</span>
+      </div>
+      <ul id="queue-list" class="card-list"></ul>
+      <p id="queue-empty" class="empty-state">No pending messages.</p>
+    </section>
+
+    <!-- Templates Tab -->
+    <section id="templates" class="tab-panel">
+      <form id="template-form" class="stack">
+        <input type="hidden" id="template-edit-id" />
+        <div class="field">
+          <label for="template-name">Template Name</label>
+          <input type="text" id="template-name" required placeholder="e.g., Follow-up" />
+        </div>
+        <div class="field">
+          <label for="template-body">Message Body</label>
+          <textarea
+            id="template-body"
+            rows="4"
+            required
+            placeholder="Hi {name}, thanks for connecting..."
+          ></textarea>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn-primary">Save Template</button>
+          <button type="button" id="cancel-template-edit" class="btn-secondary hidden">Cancel</button>
+        </div>
+      </form>
+      <hr />
+      <ul id="templates-list" class="card-list"></ul>
+      <p id="templates-empty" class="empty-state">No templates saved yet.</p>
+    </section>
+
+    <!-- History Tab -->
+    <section id="history" class="tab-panel">
+      <div class="section-header">
+        <h2>Send History</h2>
+        <select id="history-filter" class="filter-select">
+          <option value="all">All</option>
+          <option value="sent">Sent</option>
+          <option value="failed">Failed</option>
+        </select>
+      </div>
+      <div id="dashboard" class="dashboard">
+        <div class="stat"><span id="stat-total">0</span><small>Total</small></div>
+        <div class="stat"><span id="stat-sent">0</span><small>Sent</small></div>
+        <div class="stat"><span id="stat-failed">0</span><small>Failed</small></div>
+        <div class="stat"><span id="stat-rate">0%</span><small>Success</small></div>
+      </div>
+      <ul id="history-list" class="card-list"></ul>
+      <p id="history-empty" class="empty-state">No history yet.</p>
+    </section>
+
+    <!-- Settings Tab -->
+    <section id="settings" class="tab-panel">
+      <form id="settings-form" class="stack">
+        <div class="field">
+          <label for="default-timezone">Default Timezone</label>
+          <select id="default-timezone" name="default-timezone"></select>
+        </div>
+
+        <div class="field checkbox">
+          <input type="checkbox" id="enable-notifications" />
+          <label for="enable-notifications">Enable browser notifications</label>
+        </div>
+
+        <div class="field checkbox">
+          <input type="checkbox" id="dark-mode" />
+          <label for="dark-mode">Dark mode</label>
+        </div>
+
+        <div class="form-actions">
+          <button type="submit" class="btn-primary">Save Settings</button>
+          <button type="button" id="test-notification" class="btn-secondary">Test Notification</button>
+        </div>
+      </form>
+
+      <hr />
+
+      <div class="stack">
+        <h3>Backup &amp; Restore</h3>
+        <div class="field-row">
+          <button type="button" id="export-data" class="btn-secondary">Export JSON</button>
+          <label class="btn-secondary file-label">
+            Import JSON
+            <input type="file" id="import-data" accept=".json,application/json" hidden />
+          </label>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="../utils/storage.js"></script>
+  <script src="../utils/templates.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

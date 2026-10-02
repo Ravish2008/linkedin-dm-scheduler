@@ -1,0 +1,54 @@
+{
+  "manifest_version": 3,
+  "name": "LinkedIn DM Scheduler",
+  "version": "1.0.0",
+  "description": "Schedule and automatically send LinkedIn direct messages.",
+  "permissions": [
+    "storage",
+    "alarms",
+    "notifications",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://www.linkedin.com/messaging/*"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "assets/icons/icon16.svg",
+      "48": "assets/icons/icon48.svg",
+      "128": "assets/icons/icon128.svg"
+    }
+  },
+  "icons": {
+    "16": "assets/icons/icon16.svg",
+    "48": "assets/icons/icon48.svg",
+    "128": "assets/icons/icon128.svg"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.linkedin.com/messaging/*"
+      ],
+      "js": [
+        "utils/storage.js",
+        "utils/templates.js",
+        "content/linkedin.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "assets/icons/*.svg"
+      ],
+      "matches": [
+        "https://www.linkedin.com/*"
+      ]
+    }
+  ]
+}
