@@ -45,12 +45,23 @@
             list="recipient-list"
             placeholder="Start typing a connection name"
             autocomplete="off"
-            required
           />
           <datalist id="recipient-list"></datalist>
           <button type="button" id="refresh-connections" class="text-btn">
             Refresh contacts from LinkedIn
           </button>
+        </div>
+
+        <div class="field">
+          <label for="profile-url">LinkedIn Profile URL (optional)</label>
+          <input
+            type="url"
+            id="profile-url"
+            name="profile-url"
+            placeholder="https://www.linkedin.com/in/username"
+            autocomplete="off"
+          />
+          <p class="hint">Helps pick the right person when multiple connections share the same name.</p>
         </div>
 
         <div class="field">

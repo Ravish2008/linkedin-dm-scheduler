@@ -94,7 +94,8 @@ async function dispatchMessage(message, settings) {
       action: 'sendLinkedInMessage',
       payload: {
         recipient: message.recipient,
-        text: message.text
+        text: message.text,
+        profileSlug: message.profileSlug || null
       }
     });
 

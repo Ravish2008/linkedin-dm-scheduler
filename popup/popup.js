@@ -108,6 +108,28 @@
     return div.innerHTML;
   }
 
+  /**
+   * Extract the LinkedIn profile slug from a profile URL.
+   * Accepts urls like https://www.linkedin.com/in/username/ or linkedin.com/in/username.
+   */
+  function extractProfileSlug(url) {
+    if (!url) return null;
+    try {
+      const trimmed = url.trim();
+      const urlObj = new URL(trimmed.startsWith('http') ? trimmed : `https://${trimmed}`);
+      const match = urlObj.pathname.match(/\/in\/([^/]+)/i);
+      return match ? match[1] : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function profileSlugBadge(slug) {
+    return slug
+      ? `<p class="card-meta" title="linkedin.com/in/${escapeHtml(slug)}">Slug: ${escapeHtml(slug)}</p>`
+      : '';
+  }
+
   function getTimezoneList() {
     try {
       if (Intl.supportedValuesOf) {
@@ -431,14 +453,30 @@
   async function onScheduleSubmit(e) {
     e.preventDefault();
     const editId = $('#edit-id').value;
-    const recipient = $('#recipient').value.trim();
+    let recipient = $('#recipient').value.trim();
+    const profileUrl = $('#profile-url').value.trim();
+    const profileSlug = extractProfileSlug(profileUrl);
     const body = $('#message').value.trim();
     const datetime = $('#datetime').value;
     const timezone = $('#timezone').value;
     const recurrence = $('#recurrence').value;
 
-    if (!recipient || !body || !datetime) {
-      showToast('Please fill in all required fields', 'error');
+    if (profileUrl && !profileSlug) {
+      showToast('Could not extract a profile slug from the URL. Use linkedin.com/in/username.', 'error');
+      return;
+    }
+
+    if (!recipient && !profileSlug) {
+      showToast('Please provide a recipient name or a LinkedIn profile URL.', 'error');
+      return;
+    }
+
+    if (!recipient) {
+      recipient = profileSlug;
+    }
+
+    if (!body || !datetime) {
+      showToast('Please fill in the message and date/time fields.', 'error');
       return;
     }
 
@@ -451,25 +489,22 @@
 
     const scheduledAt = parseDateTimeInTimezone(datetime, timezone);
 
+    const messagePayload = {
+      recipient,
+      text: finalText,
+      timezone,
+      recurrence,
+      scheduledAt,
+      status: 'pending',
+      profileUrl: profileUrl || null,
+      profileSlug: profileSlug || null
+    };
+
     if (editId) {
-      await Storage.updateMessage(editId, {
-        recipient,
-        text: finalText,
-        timezone,
-        recurrence,
-        scheduledAt,
-        status: 'pending'
-      });
+      await Storage.updateMessage(editId, messagePayload);
       showToast('Message updated', 'success');
     } else {
-      await Storage.addMessage({
-        recipient,
-        text: finalText,
-        timezone,
-        recurrence,
-        scheduledAt,
-        status: 'pending'
-      });
+      await Storage.addMessage(messagePayload);
       showToast('Message scheduled', 'success');
     }
 
@@ -507,6 +542,7 @@
           <p class="card-title">${escapeHtml(m.recipient)}</p>
           <span class="status pending">Pending</span>
         </div>
+        ${profileSlugBadge(m.profileSlug)}
         <p class="card-meta">${formatDateTime(m.scheduledAt, m.timezone)}</p>
         ${m.recurrence !== 'none' ? `<p class="card-meta">Recurs: ${m.recurrence}</p>` : ''}
         <div class="card-body">${escapeHtml(m.text)}</div>
@@ -540,6 +576,7 @@
   function loadMessageIntoForm(m) {
     $('#edit-id').value = m.id;
     $('#recipient').value = m.recipient;
+    $('#profile-url').value = m.profileUrl || '';
     $('#message').value = m.text;
     $('#timezone').value = m.timezone || currentSettings.timezone;
     $('#recurrence').value = m.recurrence || 'none';
@@ -590,6 +627,7 @@
           <p class="card-title">${escapeHtml(m.recipient)}</p>
           <span class="status ${m.status}">${m.status}</span>
         </div>
+        ${profileSlugBadge(m.profileSlug)}
         <p class="card-meta">${m.sentAt ? formatDateTime(m.sentAt, m.timezone) : formatDateTime(m.scheduledAt, m.timezone)}</p>
         ${m.error ? `<p class="card-meta" style="color:var(--danger)">Error: ${escapeHtml(m.error)}</p>` : ''}
         <div class="card-body">${escapeHtml(m.text)}</div>

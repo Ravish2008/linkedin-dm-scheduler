@@ -307,37 +307,45 @@
   }
 
   /**
-   * STEP 3: Select the first autocomplete suggestion by pressing Enter on the
-   * typeahead input, then wait for the recipient pill to confirm selection.
-   * Falls back to clicking a visible suggestion if Enter does not work.
+   * STEP 3: Select an autocomplete suggestion.
+   * - If a profileSlug is provided, navigate to the suggestion whose link/data
+   *   contains that slug and press Enter.
+   * - Otherwise press Enter to accept the first suggestion.
+   * - Falls back to clicking a visible suggestion if keyboard selection fails.
    */
-  async function selectRecipientSuggestion(recipient, input) {
+  async function selectRecipientSuggestion(recipient, profileSlug, input) {
     if (!input) {
       input = await waitForSelector(SELECTORS.recipientTypeaheadInput, 2000);
     }
 
-    dispatchEnterKey(input);
+    // Ensure suggestions have rendered before interacting with them.
+    const suggestions = await waitForSuggestions(5000);
+
+    let target;
+    if (profileSlug) {
+      target = findSuggestionBySlug(suggestions, profileSlug);
+    }
+
+    if (target) {
+      const selectedByKeyboard = await selectSuggestionByKeyboard(input, suggestions, target);
+      if (!selectedByKeyboard) {
+        clickElement(target);
+      }
+    } else {
+      // No slug match (or no slug provided): press Enter to accept the first suggestion.
+      dispatchEnterKey(input);
+    }
+
     // Wait for the recipient pill to appear, confirming the selection.
     let pill = await waitForRecipientPill(recipient, 5000).catch(() => null);
 
     if (!pill) {
-      // Fallback: click a visible suggestion if Enter did not select anything.
-      let suggestion;
-      try {
-        suggestion = await waitForElementWithText(
-          SELECTORS.recipientSuggestions,
-          recipient,
-          5000
-        );
-      } catch {
-        suggestion = findSuggestionInLinkedListbox(recipient);
+      // Fallback: click the first visible suggestion.
+      const fallback = suggestions[0] || findAnyVisibleSuggestion();
+      if (!fallback) {
+        throw new Error(`No autocomplete suggestions available for "${recipient}"`);
       }
-
-      if (!suggestion) {
-        throw new Error(`No autocomplete suggestion found for "${recipient}"`);
-      }
-
-      clickElement(suggestion);
+      clickElement(fallback);
       pill = await waitForRecipientPill(recipient, 5000).catch(() => null);
       if (!pill) {
         throw new Error(`Recipient pill did not appear after selecting "${recipient}"`);
@@ -349,21 +357,128 @@
   }
 
   /**
+   * Wait for suggestion option elements to appear in the DOM.
+   */
+  async function waitForSuggestions(timeout = 5000) {
+    const start = Date.now();
+    return new Promise((resolve, reject) => {
+      function search() {
+        const suggestions = getAllSuggestions();
+        if (suggestions.length > 0) {
+          resolve(suggestions);
+          return;
+        }
+        if (Date.now() - start > timeout) {
+          reject(new Error('Timed out waiting for autocomplete suggestions'));
+          return;
+        }
+        setTimeout(search, 200);
+      }
+      search();
+    });
+  }
+
+  /**
+   * Collect suggestion option elements from known selectors and from the
+   * listbox referenced by the typeahead input's aria-owns/aria-controls.
+   */
+  function getAllSuggestions() {
+    const fromSelectors = Array.from(
+      document.querySelectorAll(SELECTORS.recipientSuggestions.join(', '))
+    );
+
+    const fromListboxes = [];
+    const inputs = document.querySelectorAll(SELECTORS.recipientTypeaheadInput.join(', '));
+    for (const input of inputs) {
+      const listboxIds = (input.getAttribute('aria-owns') || input.getAttribute('aria-controls') || '')
+        .split(/\s+/)
+        .filter(Boolean);
+      for (const id of listboxIds) {
+        const listbox = document.getElementById(id);
+        if (!listbox) continue;
+        listbox.querySelectorAll('[role="option"], li, button').forEach((el) => {
+          if (isVisible(el)) fromListboxes.push(el);
+        });
+      }
+    }
+
+    // Prefer options that actually look like suggestions and are visible.
+    const combined = [...fromSelectors, ...fromListboxes].filter((el) => isVisible(el));
+    // Deduplicate by element reference.
+    return Array.from(new Set(combined));
+  }
+
+  function findAnyVisibleSuggestion() {
+    return getAllSuggestions()[0] || null;
+  }
+
+  /**
+   * Return the suggestion element whose link or data attributes contain the
+   * given LinkedIn profile slug.
+   */
+  function findSuggestionBySlug(suggestions, slug) {
+    const lowerSlug = slug.toLowerCase();
+    return (
+      suggestions.find((el) => {
+        // Check anchor hrefs inside the suggestion.
+        const link = el.closest('a') || el.querySelector('a');
+        if (link) {
+          const href = (link.getAttribute('href') || '').toLowerCase();
+          if (href.includes(`/in/${lowerSlug}`)) return true;
+        }
+        // Check data attributes and text content.
+        const attrs = Array.from(el.attributes)
+          .map((attr) => attr.value.toLowerCase())
+          .join(' ');
+        if (attrs.includes(lowerSlug)) return true;
+        return el.textContent.toLowerCase().includes(lowerSlug);
+      }) || null
+    );
+  }
+
+  /**
+   * Use ArrowDown keyboard navigation to move the selection to the target
+   * suggestion, then press Enter.
+   */
+  async function selectSuggestionByKeyboard(input, suggestions, target) {
+    const index = Array.from(suggestions).indexOf(target);
+    if (index < 0) return false;
+
+    input.focus();
+    // Press ArrowDown enough times to reach the target option.
+    const downCount = index + 1;
+    for (let i = 0; i < downCount; i++) {
+      dispatchKey(input, 'ArrowDown', 40);
+      await wait(80);
+    }
+    dispatchEnterKey(input);
+    return true;
+  }
+
+  /**
+   * Dispatch a keyboard event on an element.
+   */
+  function dispatchKey(el, key, keyCode) {
+    const events = ['keydown', 'keypress', 'keyup'];
+    for (const type of events) {
+      el.dispatchEvent(
+        new KeyboardEvent(type, {
+          key,
+          code: key,
+          keyCode,
+          which: keyCode,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    }
+  }
+
+  /**
    * Dispatch Enter keyboard events on an element.
    */
   function dispatchEnterKey(el) {
-    const events = ['keydown', 'keypress', 'keyup'];
-    for (const type of events) {
-      const event = new KeyboardEvent(type, {
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        which: 13,
-        bubbles: true,
-        cancelable: true
-      });
-      el.dispatchEvent(event);
-    }
+    dispatchKey(el, 'Enter', 13);
   }
 
   /**
@@ -375,33 +490,16 @@
 
   /**
    * Helper: locate the suggestions menu via the typeahead's ARIA attributes.
+   * Kept as a last-resort fallback.
    */
   function findSuggestionInLinkedListbox(recipient) {
-    const inputs = document.querySelectorAll(
-      SELECTORS.recipientTypeaheadInput.join(', ')
-    );
+    const suggestions = getAllSuggestions();
     const lower = recipient.toLowerCase();
-
-    for (const input of inputs) {
-      const listboxIds =
-        (input.getAttribute('aria-owns') || input.getAttribute('aria-controls') || '')
-          .split(/\s+/)
-          .filter(Boolean);
-      for (const id of listboxIds) {
-        const listbox = document.getElementById(id);
-        if (!listbox) continue;
-        const options = listbox.querySelectorAll('[role="option"], li, button');
-        for (const option of options) {
-          if (
-            option.textContent.toLowerCase().includes(lower) &&
-            isVisible(option)
-          ) {
-            return option;
-          }
-        }
-      }
-    }
-    return null;
+    return (
+      suggestions.find((option) =>
+        option.textContent.toLowerCase().includes(lower)
+      ) || null
+    );
   }
 
   /**
@@ -442,7 +540,7 @@
   /**
    * Send a LinkedIn DM by executing the 5-step flow in order with retries.
    */
-  async function sendLinkedInMessage({ recipient, text }) {
+  async function sendLinkedInMessage({ recipient, text, profileSlug }) {
     if (!recipient || !text) {
       throw new Error('Recipient and message text are required.');
     }
@@ -452,7 +550,7 @@
       try {
         await clickComposeButton();
         const recipientInput = await typeRecipientName(recipient);
-        await selectRecipientSuggestion(recipient, recipientInput);
+        await selectRecipientSuggestion(recipient, profileSlug || null, recipientInput);
         await typeMessage(text);
         await clickSend();
         // Give LinkedIn time to process the send and update the UI.
