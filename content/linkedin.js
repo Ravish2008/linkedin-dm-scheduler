@@ -232,44 +232,7 @@
     el.scrollIntoView({ block: 'center', inline: 'center' });
 
     if (el.isContentEditable) {
-      // LinkedIn's composer is a contenteditable div that often contains
-      // <p><br></p>. Clicking/focusing the inner <p> is more reliable than
-      // the outer div, which may let the overlay intercept events.
-      const innerParagraph = el.querySelector('p') || el;
-      clickElement(innerParagraph);
-      innerParagraph.focus();
-      el.focus();
-
-      // Place the cursor at the start of the editable paragraph.
-      const selection = window.getSelection();
-      const range = document.createRange();
-      range.setStart(innerParagraph, 0);
-      range.collapse(true);
-      selection.removeAllRanges();
-      selection.addRange(range);
-
-      // Let the editor register focus/selection before inserting text.
-      await wait(500);
-
-      const inserted = document.execCommand('insertText', false, text);
-      if (!inserted) {
-        // Fallback for environments where execCommand is unavailable.
-        el.textContent = text;
-      }
-
-      // Safety-net events to ensure LinkedIn updates its state.
-      el.dispatchEvent(
-        new InputEvent('input', {
-          bubbles: true,
-          cancelable: true,
-          inputType: 'insertText',
-          data: text
-        })
-      );
-      el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-      el.dispatchEvent(
-        new KeyboardEvent('keyup', { bubbles: true, cancelable: true })
-      );
+      await fillContentEditableComposer(el, text);
     } else {
       el.focus();
       el.click();
@@ -295,6 +258,94 @@
     // Mimic human typing speed for longer messages.
     if (text.length > 50) {
       await wait(Math.min(text.length * CONFIG.typingDelay, 1200));
+    }
+  }
+
+  /**
+   * Fills LinkedIn's contenteditable composer. Uses an event-driven execCommand
+   * approach first, then falls back to direct innerHTML mutation and a flurry
+   * of input events to force React/Ember state updates.
+   */
+  async function fillContentEditableComposer(el, text) {
+    const paragraph = el.querySelector('p') || el;
+
+    // Approach 1: focus + selection + execCommand.
+    el.focus();
+    paragraph.focus();
+    await wait(300);
+
+    const selection = window.getSelection();
+    const range = document.createRange();
+    if (paragraph.firstChild) {
+      range.setStart(paragraph.firstChild, 0);
+    } else {
+      range.setStart(paragraph, 0);
+    }
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    await wait(300);
+
+    document.execCommand('selectAll', false, null);
+    await wait(100);
+    const inserted = document.execCommand('insertText', false, text);
+
+    if (!inserted || !hasRealText(el)) {
+      // Approach 2: direct DOM mutation.
+      el.innerHTML = `<p>${escapeHtml(text)}</p>`;
+      inserted &&= false;
+    }
+
+    // Approach 3 (always run): nudge Ember's state by simulating a key press.
+    await nudgeComposerState(el);
+
+    // Flood the element with events so any framework listeners update state.
+    dispatchComposerEvents(el, text);
+  }
+
+  function hasRealText(el) {
+    return (el.textContent || '').trim().length > 0;
+  }
+
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  async function nudgeComposerState(el) {
+    await wait(300);
+    el.focus();
+    const paragraph = el.querySelector('p') || el;
+    paragraph.focus();
+
+    const events = [
+      new Event('focus', { bubbles: true }),
+      new KeyboardEvent('keydown', { key: ' ', code: 'Space', keyCode: 32, bubbles: true }),
+      new KeyboardEvent('keypress', { key: ' ', code: 'Space', keyCode: 32, bubbles: true }),
+      new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ' ' }),
+      new KeyboardEvent('keyup', { key: ' ', code: 'Space', keyCode: 32, bubbles: true }),
+      new KeyboardEvent('keydown', { key: 'Backspace', code: 'Backspace', keyCode: 8, bubbles: true }),
+      new KeyboardEvent('keypress', { key: 'Backspace', code: 'Backspace', keyCode: 8, bubbles: true }),
+      new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }),
+      new KeyboardEvent('keyup', { key: 'Backspace', code: 'Backspace', keyCode: 8, bubbles: true })
+    ];
+    for (const event of events) {
+      el.dispatchEvent(event);
+      paragraph.dispatchEvent(event);
+    }
+  }
+
+  function dispatchComposerEvents(el, text) {
+    const events = [
+      new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: text }),
+      new Event('input', { bubbles: true, cancelable: true }),
+      new Event('change', { bubbles: true, cancelable: true }),
+      new KeyboardEvent('keyup', { bubbles: true, cancelable: true }),
+      new Event('compositionend', { bubbles: true, cancelable: true })
+    ];
+    for (const event of events) {
+      el.dispatchEvent(event);
     }
   }
 
