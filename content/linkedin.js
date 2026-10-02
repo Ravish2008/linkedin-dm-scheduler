@@ -1003,6 +1003,8 @@
   // Listen for commands from the popup / background service worker.
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'sendLinkedInMessage') {
+      console.log('[LDMS] received sendLinkedInMessage on tab', window.location.href);
+
       // Acknowledge immediately and close the message channel to avoid the
       // "message channel closed before a response was received" error.
       try {

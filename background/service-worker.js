@@ -95,6 +95,19 @@ async function dispatchMessage(message, settings) {
     return;
   }
 
+  console.log('[LDMS BG] sending to tab', tab.id, 'url:', tab.url);
+
+  // Explicitly inject the content script into the exact tab so we know it is
+  // present before sending the command.
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ['utils/storage.js', 'utils/templates.js', 'content/linkedin.js']
+    });
+  } catch (err) {
+    console.warn('[LDMS BG] executeScript warning:', err.message);
+  }
+
   // Use an out-of-band completion message instead of holding the message
   // channel open, which can time out during long navigation/type/send flows.
   const COMPLETE_TIMEOUT_MS = 90000;
@@ -196,7 +209,7 @@ function ensureLinkedInTab(targetUrl, requireExactUrl = false) {
           }
         }, 30000);
 
-        const onUpdated = (updatedTabId, changeInfo) => {
+        const onUpdated = (updatedTabId, changeInfo, updatedTab) => {
           if (updatedTabId !== tabId || changeInfo.status !== 'complete') return;
           if (resolved) return;
           resolved = true;
@@ -204,7 +217,7 @@ function ensureLinkedInTab(targetUrl, requireExactUrl = false) {
           chrome.tabs.onUpdated.removeListener(onUpdated);
           // Give the content script time to initialize and for LinkedIn's
           // dynamic chrome (action bar, messaging sidebar) to render.
-          setTimeout(() => resolve({ id: tabId }), 3500);
+          setTimeout(() => resolve({ id: tabId, url: updatedTab.url || targetUrl }), 3500);
         };
 
         chrome.tabs.onUpdated.addListener(onUpdated);
