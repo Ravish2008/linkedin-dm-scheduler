@@ -266,25 +266,38 @@
    * LinkedIn's Ember/Glimmer handlers live there, so focus/click/execCommand only
    * activate the composer when run in that context.
    */
-  function executeInMainWorld(code) {
+  function executeInMainWorld(fn, arg) {
     return new Promise((resolve) => {
       const callbackName = '__ldms_cb_' + Date.now() + '_' + Math.random().toString(36).slice(2);
       const script = document.createElement('script');
       script.setAttribute('data-linkedin-dm-scheduler', 'true');
+
+      // Serialize the function and its argument. JSON.stringify safely escapes
+      // quotes, newlines, backslashes, and other special characters in the message.
+      const fnSource = fn.toString();
+      const argJson = JSON.stringify(arg);
       script.textContent = `
         (function() {
+          var callbackName = ${JSON.stringify(callbackName)};
           var done = function(result) {
-            window['${callbackName}'](result);
+            try {
+              window[callbackName](result);
+            } catch (e) {
+              // If the callback is gone, nothing to do.
+            }
           };
           try {
-            (${code})(done);
+            (${fnSource})(${argJson}, done);
           } catch (err) {
             done({ success: false, error: String(err && err.message || err) });
           }
         })();
       `;
 
+      let resolved = false;
       window[callbackName] = (result) => {
+        if (resolved) return;
+        resolved = true;
         try {
           delete window[callbackName];
         } catch {
@@ -297,6 +310,23 @@
           // ignore
         }
       };
+
+      // Failsafe: resolve if the script never reports back (e.g. CSP blocks it).
+      setTimeout(() => {
+        if (resolved) return;
+        resolved = true;
+        try {
+          delete window[callbackName];
+        } catch {
+          window[callbackName] = undefined;
+        }
+        resolve({ success: false, error: 'Main-world script did not respond' });
+        try {
+          script.remove();
+        } catch {
+          // ignore
+        }
+      }, 5000);
 
       const root = document.documentElement || document.head || document.body;
       if (root) {
@@ -325,8 +355,7 @@
   }
 
   function fillComposerInMainWorld(text) {
-    const messageJson = JSON.stringify(text);
-    const code = function (done) {
+    function mainWorldFill(message, done) {
       const el = document.querySelector('div.msg-form__contenteditable[contenteditable="true"]');
       if (!el) {
         done({ success: false, error: 'Composer not found in main world' });
@@ -350,9 +379,8 @@
       selection.addRange(range);
 
       document.execCommand('selectAll', false, null);
-      const inserted = document.execCommand('insertText', false, MESSAGE_TEXT);
+      const inserted = document.execCommand('insertText', false, message);
 
-      // Trigger input listeners.
       el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
       el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
       el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true }));
@@ -363,9 +391,9 @@
       } else {
         done({ success: false, error: 'insertText failed and no text present' });
       }
-    }.toString().replace('MESSAGE_TEXT', messageJson);
+    }
 
-    return executeInMainWorld(code);
+    return executeInMainWorld(mainWorldFill, text);
   }
 
   async function fillComposerInIsolatedWorld(el, text) {
@@ -910,15 +938,41 @@
   // Listen for commands from the popup / background service worker.
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'sendLinkedInMessage') {
-      sendLinkedInMessage(request.payload)
-        .then(() => sendResponse({ success: true }))
-        .catch((err) => sendResponse({ success: false, error: err.message }));
+      const OPERATION_TIMEOUT_MS = 60000;
+
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(
+          () => reject(new Error('Operation timed out after 60 seconds')),
+          OPERATION_TIMEOUT_MS
+        );
+      });
+
+      Promise.race([sendLinkedInMessage(request.payload), timeoutPromise])
+        .then(() => {
+          try {
+            sendResponse({ success: true });
+          } catch {
+            // sendResponse may throw if the channel is already closed.
+          }
+        })
+        .catch((err) => {
+          try {
+            sendResponse({ success: false, error: String(err && err.message || err) });
+          } catch {
+            // sendResponse may throw if the channel is already closed.
+          }
+        });
+
       return true; // async response
     }
 
     if (request.action === 'getConnections') {
-      const names = extractConnections();
-      sendResponse({ success: true, connections: names });
+      try {
+        const names = extractConnections();
+        sendResponse({ success: true, connections: names });
+      } catch (err) {
+        sendResponse({ success: false, error: String(err && err.message || err) });
+      }
       return false;
     }
   });
