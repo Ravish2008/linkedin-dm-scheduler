@@ -96,6 +96,12 @@
     return naive;
   }
 
+  function formatDateTimeLocalInTimezone(timestamp, timezone) {
+    const parts = getPartsInTimezone(timestamp, timezone);
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}T${pad(parts.hour)}:${pad(parts.minute)}`;
+  }
+
   function escapeHtml(str) {
     const div = document.createElement('div');
     div.textContent = str;
@@ -538,11 +544,12 @@
     $('#timezone').value = m.timezone || currentSettings.timezone;
     $('#recurrence').value = m.recurrence || 'none';
 
-    const d = new Date(m.scheduledAt);
-    // Convert UTC timestamp back to local input value in target timezone is tricky;
-    // we display in the browser's local time as a convenience.
-    d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
-    $('#datetime').value = d.toISOString().slice(0, 16);
+    // datetime-local uses a wall-clock value with no timezone suffix, so show the
+    // stored time in the message's target timezone.
+    $('#datetime').value = formatDateTimeLocalInTimezone(
+      m.scheduledAt,
+      m.timezone || currentSettings.timezone
+    );
 
     $('#cancel-edit').classList.remove('hidden');
     updatePlaceholderFields();

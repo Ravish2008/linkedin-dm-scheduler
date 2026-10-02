@@ -9,6 +9,7 @@ importScripts('../utils/storage.js');
 
 const ALARM_NAME = 'check-scheduled-messages';
 const LINKEDIN_MESSAGING_URL = 'https://www.linkedin.com/messaging/';
+let isChecking = false;
 
 // Ensure the periodic check alarm exists.
 chrome.runtime.onInstalled.addListener(() => {
@@ -34,6 +35,8 @@ chrome.alarms.onAlarm.addListener((alarm) => {
  * Main scheduler loop.
  */
 async function checkScheduledMessages() {
+  if (isChecking) return;
+  isChecking = true;
   try {
     const messages = await Storage.getMessages();
     const settings = await Storage.getSettings();
@@ -50,6 +53,8 @@ async function checkScheduledMessages() {
     }
   } catch (err) {
     console.error('[Scheduler] Error checking messages:', err);
+  } finally {
+    isChecking = false;
   }
 }
 
@@ -120,20 +125,40 @@ function ensureMessagingTab() {
           return;
         }
 
+        let createdTabId = null;
+        let resolved = false;
+
+        const timeoutId = setTimeout(() => {
+          if (!resolved) {
+            resolved = true;
+            chrome.tabs.onUpdated.removeListener(onUpdated);
+            reject(new Error('Timeout waiting for LinkedIn messaging tab to load'));
+          }
+        }, 30000);
+
+        const onUpdated = (tabId, changeInfo) => {
+          if (tabId !== createdTabId || changeInfo.status !== 'complete') return;
+          if (resolved) return;
+          resolved = true;
+          clearTimeout(timeoutId);
+          chrome.tabs.onUpdated.removeListener(onUpdated);
+          // Give the content script a moment to initialize.
+          setTimeout(() => resolve({ id: createdTabId }), 1500);
+        };
+
+        chrome.tabs.onUpdated.addListener(onUpdated);
+
         chrome.tabs.create({ url: LINKEDIN_MESSAGING_URL, active: false }, (tab) => {
           if (chrome.runtime.lastError) {
-            reject(new Error(chrome.runtime.lastError.message));
+            if (!resolved) {
+              resolved = true;
+              clearTimeout(timeoutId);
+              chrome.tabs.onUpdated.removeListener(onUpdated);
+              reject(new Error(chrome.runtime.lastError.message));
+            }
             return;
           }
-
-          const onUpdated = (tabId, changeInfo) => {
-            if (tabId === tab.id && changeInfo.status === 'complete') {
-              chrome.tabs.onUpdated.removeListener(onUpdated);
-              // Give the content script a moment to initialize.
-              setTimeout(() => resolve(tab), 1500);
-            }
-          };
-          chrome.tabs.onUpdated.addListener(onUpdated);
+          createdTabId = tab.id;
         });
       }
     );
@@ -230,20 +255,31 @@ function showNotification(title, message) {
 // Listen for status / stats requests from the popup.
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'getStats') {
-    Storage.getMessages().then((messages) => {
-      const total = messages.length;
-      const sent = messages.filter((m) => m.status === 'sent').length;
-      const failed = messages.filter((m) => m.status === 'failed').length;
-      const pending = messages.filter((m) => m.status === 'pending').length;
-      const successRate = total ? Math.round((sent / total) * 100) : 0;
-      sendResponse({ total, sent, failed, pending, successRate });
-    });
+    Storage.getMessages()
+      .then((messages) => {
+        const total = messages.filter(
+          (m) => m.status === 'sent' || m.status === 'failed'
+        ).length;
+        const sent = messages.filter((m) => m.status === 'sent').length;
+        const failed = messages.filter((m) => m.status === 'failed').length;
+        const pending = messages.filter((m) => m.status === 'pending').length;
+        const successRate = total ? Math.round((sent / total) * 100) : 0;
+        sendResponse({ total, sent, failed, pending, successRate });
+      })
+      .catch((err) => {
+        console.error('[Scheduler] getStats error:', err);
+        sendResponse({ total: 0, sent: 0, failed: 0, pending: 0, successRate: 0 });
+      });
     return true;
   }
 
   if (request.action === 'testNotification') {
-    showNotification('LinkedIn DM Scheduler', 'Notifications are working.');
-    sendResponse({ success: true });
+    try {
+      showNotification('LinkedIn DM Scheduler', 'Notifications are working.');
+      sendResponse({ success: true });
+    } catch (err) {
+      sendResponse({ success: false, error: err.message });
+    }
     return true;
   }
 });

@@ -18,42 +18,78 @@
 
   const SELECTORS = {
     composeButton: [
-      'button[aria-label^="Compose a new message"]',
-      '.msg-compose-btn button',
+      'button:has(svg use[href="#compose-medium"])',
+      'button:has(svg use[href*="open-in-new"])',
+      'button svg use[href="#compose-medium"]',
+      'button svg use[href*="open-in-new"]',
+      'li-icon[type="compose-medium"]',
+      'button[aria-label^="Compose a new message" i]',
+      'button[aria-label*="New message" i]',
+      'button[aria-label*="Compose" i]',
+      'a[aria-label*="Compose" i]',
+      'button[data-testid="compose-button"]',
       'button[data-test-icon-name="compose"]',
-      '.msg-overlay-bubble-header__left-actions button'
+      '.msg-overlay-list-bubble__compose-button',
+      '.msg-overlay-bubble-header__controls button',
+      '.msg-overlay-bubble-header__control',
+      '.msg-compose-btn button',
+      '.msg-overlay-list-bubble-header button'
     ],
     conversationSearchInput: [
-      'input[placeholder*="Search messages"]',
-      'input[aria-label*="Search messages"]',
+      'input[placeholder*="Search messages" i]',
+      'input[aria-label*="Search messages" i]',
+      'input[aria-label*="Search" i]',
       '.msg-overlay-list-bubble-search__search-box input',
-      '#search-conversations'
+      '.msg-overlay-list-bubble-search__input',
+      '#search-conversations',
+      'input[placeholder*="Search" i]'
     ],
     composeSearchInput: [
-      'input[placeholder*="name"]',
-      'input[aria-label*="Search"]',
+      'input[aria-label*="Search by name" i]',
+      'input[placeholder*="name" i]',
+      'div[contenteditable="true"][aria-label*="Search" i]',
+      'div[contenteditable="true"][aria-label*="name" i]',
       '.msg-connections-search__input',
-      '.msg-overlay-list-bubble-search__search-box input'
+      '.msg-connections-search__contenteditable',
+      '.msg-overlay-list-bubble__search-recipient input',
+      '.msg-overlay-list-bubble__search-recipient [contenteditable="true"]',
+      '[role="combobox"] input',
+      '[role="combobox"] [contenteditable="true"]'
     ],
     searchResultItems: [
+      '.msg-connections-result__connection-item',
       '.msg-connections-result-list button',
       '[data-test-msg-to-selector] button',
-      '.msg-connections-result__connection-item button',
-      '.msg-overlay-list-bubble__content .artdeco-button'
+      '[data-testid="connection-list-item"]',
+      '.msg-overlay-list-bubble__content .artdeco-button',
+      '.msg-overlay-list-bubble__content button',
+      '[role="listbox"] button',
+      '[role="option"]'
     ],
     messageInput: [
+      'div.msg-form__contenteditable',
       '.msg-form__contenteditable',
       '.msg-overlay-conversation-bubble .msg-form__contenteditable',
-      '[contenteditable="true"][role="textbox"]'
+      '.msg-overlay-conversation-bubble [contenteditable="true"]',
+      'div.msg-form__contenteditable p[contenteditable="true"]',
+      'div[contenteditable="true"][role="textbox"]',
+      'div[contenteditable="true"]',
+      '[role="textbox"]'
     ],
     sendButton: [
+      "button.msg-form__send-button.artdeco-button.artdeco-button--1[type='submit']",
       'button[type="submit"].msg-form__send-button',
       'button.msg-form__send-button',
-      'button[aria-label="Send message"]'
+      'button[aria-label*="Send" i]',
+      'button[aria-label="Send message"]',
+      '.msg-form__send-button'
     ],
     conversationListItems: [
       '.msg-conversation-listitem',
-      '.msg-overlay-list-bubble__content li'
+      '.msg-conversation-card',
+      '.msg-overlay-list-bubble__content li',
+      'a[href^="/messaging/thread/"]',
+      '.msg-conversation-listitem__participant-names'
     ]
   };
 
@@ -129,10 +165,39 @@
   }
 
   function isVisible(el) {
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) return true;
     return !!(el.offsetParent !== null);
   }
 
+  /**
+   * Find a clickable element (button, link, or labelled wrapper) for a given label substring.
+   */
+  function findButtonByLabel(substring) {
+    const lower = substring.toLowerCase();
+    const buttons = Array.from(document.querySelectorAll('button, a, [role="button"]'));
+    return buttons.find((el) => {
+      const label = (el.getAttribute('aria-label') || el.textContent || '').toLowerCase();
+      return label.includes(lower) && isVisible(el);
+    });
+  }
+
   function clickElement(el) {
+    if (!el) throw new Error('Cannot click null element');
+
+    // If we hit an icon/svg/custom element, walk up to the real control.
+    const clickableTag = /^(button|a)$/i;
+    const isClickable =
+      clickableTag.test(el.tagName) ||
+      el.getAttribute('role') === 'button' ||
+      el.onclick;
+    if (!isClickable) {
+      el =
+        el.closest('button, a, [role="button"]') ||
+        el;
+    }
+
     el.scrollIntoView({ block: 'center', inline: 'center' });
     const clickEvent = new MouseEvent('click', {
       bubbles: true,
@@ -140,13 +205,14 @@
       view: window
     });
     el.dispatchEvent(clickEvent);
-    el.click();
+    if (typeof el.click === 'function') el.click();
   }
 
   /**
    * Simulate typing into a contenteditable or input element.
    */
   async function simulateTyping(el, text) {
+    if (!el) throw new Error('Cannot type into null element');
     el.focus();
     el.click();
 
@@ -159,7 +225,17 @@
 
     const events = ['focus', 'input', 'change', 'keyup'];
     for (const type of events) {
-      const event = new Event(type, { bubbles: true, cancelable: true });
+      let event;
+      if (type === 'input') {
+        event = new InputEvent('input', {
+          bubbles: true,
+          cancelable: true,
+          inputType: 'insertText',
+          data: text
+        });
+      } else {
+        event = new Event(type, { bubbles: true, cancelable: true });
+      }
       el.dispatchEvent(event);
     }
 
@@ -173,7 +249,15 @@
    * Find and click the send button.
    */
   async function clickSend() {
-    const sendBtn = await waitForSelector(SELECTORS.sendButton, 8000);
+    let sendBtn;
+    try {
+      sendBtn = await waitForSelector(SELECTORS.sendButton, 8000);
+    } catch {
+      sendBtn = findButtonByLabel('send message') || findButtonByLabel('send');
+    }
+    if (!sendBtn) {
+      throw new Error('Could not find the send button');
+    }
     await randomDelay(400);
     clickElement(sendBtn);
     await wait(1200);
@@ -189,14 +273,17 @@
         5000
       );
       await simulateTyping(searchInput, recipient);
-      await wait(1200);
+      await wait(1500);
 
       const item = await waitForElementWithText(
         SELECTORS.conversationListItems,
         recipient,
         6000
       );
-      clickElement(item);
+      const clickable =
+        item.closest('.msg-conversation-listitem, .msg-conversation-card, li, a[href^="/messaging/thread/"]') ||
+        item;
+      clickElement(clickable);
       await wait(1500);
       return true;
     } catch {
@@ -208,13 +295,21 @@
    * Use the compose flow to start a new conversation.
    */
   async function openConversationViaCompose(recipient) {
-    const composeBtn = await waitForSelector(SELECTORS.composeButton, 8000);
+    let composeBtn;
+    try {
+      composeBtn = await waitForSelector(SELECTORS.composeButton, 6000);
+    } catch {
+      composeBtn = findButtonByLabel('compose') || findButtonByLabel('new message');
+    }
+    if (!composeBtn) {
+      throw new Error('Could not find the compose/new message button');
+    }
     clickElement(composeBtn);
-    await wait(1200);
+    await wait(1500);
 
     const searchInput = await waitForSelector(SELECTORS.composeSearchInput, 8000);
     await simulateTyping(searchInput, recipient);
-    await wait(1200);
+    await wait(1500);
 
     const resultItems = document.querySelectorAll(
       SELECTORS.searchResultItems.join(', ')
@@ -231,16 +326,12 @@
       }
     }
 
-    if (!selected && resultItems.length > 0) {
-      selected = resultItems[0];
-    }
-
     if (!selected) {
-      throw new Error(`No search results found for "${recipient}"`);
+      throw new Error(`No matching search results found for "${recipient}"`);
     }
 
     clickElement(selected);
-    await wait(1500);
+    await wait(2000);
   }
 
   /**
@@ -295,12 +386,17 @@
    */
   function extractConnections() {
     const names = new Set();
-    document
-      .querySelectorAll('.msg-conversation-listitem__participant-names, .msg-conversation-card__participant-names')
-      .forEach((el) => {
-        const text = el.textContent.trim();
-        if (text) names.add(text);
-      });
+    const selectors = [
+      '.msg-conversation-listitem__participant-names',
+      '.msg-conversation-card__participant-names',
+      '.msg-conversation-listitem__title',
+      '.msg-conversation-card__title',
+      '.msg-overlay-list-bubble__content .msg-conversation-card__participant-names'
+    ].join(', ');
+    document.querySelectorAll(selectors).forEach((el) => {
+      const text = el.textContent.trim().split('\n')[0].trim();
+      if (text) names.add(text);
+    });
     return Array.from(names);
   }
 
