@@ -78,18 +78,16 @@ async function resetSendingMessages() {
 }
 
 /**
- * Dispatches a single message to a LinkedIn tab.
- * If a profileUrl is present the tab is navigated to that profile first;
- * otherwise the existing messaging flow is used.
+ * Dispatches a single message to the LinkedIn messaging tab.
+ * Always uses the messaging page compose flow; profileSlug (if present) is
+ * passed along for typeahead disambiguation of duplicate names.
  */
 async function dispatchMessage(message, settings) {
   let tab;
   try {
-    if (message.profileUrl) {
-      tab = await ensureProfileTab(message.profileUrl);
-    } else {
-      tab = await ensureMessagingTab();
-    }
+    // Always use the full messaging page — the compose flow works reliably
+    // there and the composer lives in the main document.
+    tab = await ensureMessagingTab();
   } catch (err) {
     await markFailed(message.id, `Could not open LinkedIn tab: ${err.message}`);
     return;
@@ -97,13 +95,13 @@ async function dispatchMessage(message, settings) {
 
   console.log('[LDMS BG] sending to tab', tab.id, 'url:', tab.url);
 
-  // Explicitly inject the content script into every frame of the exact tab.
-  // LinkedIn renders the messaging overlay inside an iframe, so the script must
-  // run there as well as in the top frame.
+  // Inject only the content script. utils/storage.js and utils/templates.js
+  // are already loaded by the manifest content_scripts declaration; injecting
+  // them again here would throw "Identifier has already been declared".
   try {
     await chrome.scripting.executeScript({
       target: { tabId: tab.id, allFrames: true },
-      files: ['utils/storage.js', 'utils/templates.js', 'content/linkedin.js']
+      files: ['content/linkedin.js']
     });
   } catch (err) {
     console.warn('[LDMS BG] executeScript warning:', err.message);
@@ -156,7 +154,6 @@ async function dispatchMessage(message, settings) {
         id: message.id,
         recipient: message.recipient,
         text: message.text,
-        profileUrl: message.profileUrl || null,
         profileSlug: message.profileSlug || null
       }
     });
@@ -180,14 +177,6 @@ async function dispatchMessage(message, settings) {
  */
 function ensureMessagingTab() {
   return ensureLinkedInTab(LINKEDIN_MESSAGING_URL);
-}
-
-/**
- * Navigates an existing LinkedIn tab (or creates one) to the profile URL and
- * waits for the page to load before returning it.
- */
-function ensureProfileTab(profileUrl) {
-  return ensureLinkedInTab(profileUrl, true);
 }
 
 /**

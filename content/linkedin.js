@@ -1,14 +1,10 @@
 /**
  * Content script for LinkedIn messaging automation.
- * Runs on LinkedIn pages (messaging, profiles, etc.).
+ * Runs on the LinkedIn messaging page (linkedin.com/messaging/).
  *
- * Two supported send flows:
- * 1. Profile-URL flow (preferred): when a profileUrl is provided, the background
- *    worker navigates to the profile page. This script clicks the Message button,
- *    waits for the inline conversation overlay, types the message, and sends.
- * 2. Compose/typeahead flow (fallback): when no profileUrl is provided, this
- *    script opens the new-message overlay, searches by name, selects the person,
- *    types the message, and sends.
+ * Send flow: open the new-message overlay via the compose (pencil) button,
+ * search for the recipient by name in the typeahead, select the match
+ * (optionally disambiguated by profile slug), type the message, and send.
  */
 
 (function () {
@@ -19,11 +15,6 @@
   window.__linkedinDmSchedulerInjected = true;
 
   const SELECTORS = {
-    // Profile page Message button.
-    profileMessageButton: [
-      'svg#send-privately-small',
-      'svg use[href*="send-privately"]'
-    ],
     // Compose/typeahead flow selectors.
     composeButton: [
       'button:has(svg use[href="#compose-medium"])',
@@ -474,82 +465,11 @@
   }
 
   // ---------------------------------------------------------------------------
-  // PROFILE-URL FLOW
+  // COMPOSE / TYPEAHEAD FLOW (messaging page)
   // ---------------------------------------------------------------------------
 
   /**
-   * Click the Message button on a LinkedIn profile page.
-   */
-  async function clickProfileMessageButton() {
-    // If the overlay is already active, do not click again (avoids closing it on retries).
-    if (isProfileOverlayOpen()) {
-      return;
-    }
-
-    // Profile pages render the action bar dynamically; give it time to appear.
-    await wait(4000);
-
-    let messageBtn = findProfileMessageButton();
-
-    if (!messageBtn) {
-      // LinkedIn sometimes lazily mounts the button; poll briefly.
-      const start = Date.now();
-      while (!messageBtn && Date.now() - start < 8000) {
-        await wait(500);
-        messageBtn = findProfileMessageButton();
-      }
-    }
-
-    if (!messageBtn) {
-      throw new Error('Could not find the Message button on the profile page');
-    }
-
-    clickElement(messageBtn);
-    // Wait for the inline message overlay and its composer to fully render.
-    await wait(5000);
-  }
-
-  function isProfileOverlayOpen() {
-    return !!(
-      document.querySelector('.msg-overlay-conversation-bubble--is-active') ||
-      document.querySelector('.msg-overlay-conversation-bubble--active') ||
-      document.querySelector('.msg-overlay-conversation-bubble .msg-form__contenteditable[contenteditable="true"]')
-    );
-  }
-
-  function findProfileMessageButton() {
-    // Primary: the clickable span wraps svg#send-privately-small.
-    const svg = document.querySelector('svg#send-privately-small');
-    if (svg && isVisible(svg)) {
-      let parent = svg.parentElement;
-      while (parent && parent !== document.body) {
-        if (parent.tagName.toLowerCase() === 'span' || parent.tagName.toLowerCase() === 'button') {
-          if (isVisible(parent)) return parent;
-        }
-        parent = parent.parentElement;
-      }
-    }
-
-    // Fallback 1: any element whose trimmed text is exactly "Message".
-    const candidates = Array.from(document.querySelectorAll('span, button, a, [role="button"]'));
-    const exact = candidates.find(
-      (el) => el.textContent.trim() === 'Message' && isVisible(el)
-    );
-    if (exact) return exact;
-
-    // Fallback 2: any visible element containing "Message" near the top of the profile.
-    const fuzzy = candidates.find(
-      (el) => /\bMessage\b/.test(el.textContent) && isVisible(el)
-    );
-    return fuzzy || null;
-  }
-
-  // ---------------------------------------------------------------------------
-  // COMPOSE / TYPEAHEAD FLOW (fallback when no profileUrl)
-  // ---------------------------------------------------------------------------
-
-  /**
-   * STEP 1 (fallback): Click the pencil/compose button to open the new-message overlay.
+   * STEP 1: Click the pencil/compose button to open the new-message overlay.
    */
   async function clickComposeButton() {
     // If the overlay is already open, do not click compose again (avoids closing it).
@@ -943,11 +863,12 @@
   // ---------------------------------------------------------------------------
 
   /**
-   * Send a LinkedIn DM.
-   * Uses the profile-URL flow when profileUrl is provided; otherwise falls back
-   * to the compose/typeahead flow.
+   * Send a LinkedIn DM via the messaging page compose flow:
+   * pencil icon → typeahead search by name → select suggestion → type → send.
+   * A profileSlug (from a profile URL) is used only to disambiguate duplicate
+   * names in the typeahead dropdown.
    */
-  async function sendLinkedInMessage({ recipient, text, profileUrl, profileSlug }) {
+  async function sendLinkedInMessage({ recipient, text, profileSlug }) {
     if (!recipient || !text) {
       throw new Error('Recipient and message text are required.');
     }
@@ -955,13 +876,9 @@
     let lastError;
     for (let attempt = 0; attempt < CONFIG.retryAttempts; attempt++) {
       try {
-        if (profileUrl) {
-          await clickProfileMessageButton();
-        } else {
-          await clickComposeButton();
-          const recipientInput = await typeRecipientName(recipient);
-          await selectRecipientSuggestion(recipient, profileSlug || null, recipientInput);
-        }
+        await clickComposeButton();
+        const recipientInput = await typeRecipientName(recipient);
+        await selectRecipientSuggestion(recipient, profileSlug || null, recipientInput);
 
         await typeMessage(text);
         await clickSend();
