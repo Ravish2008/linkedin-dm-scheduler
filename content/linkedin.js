@@ -262,14 +262,115 @@
   }
 
   /**
-   * Fills LinkedIn's contenteditable composer. Uses an event-driven execCommand
-   * approach first, then falls back to direct innerHTML mutation and a flurry
-   * of input events to force React/Ember state updates.
+   * Executes a string of JS in the page's MAIN world by injecting a <script> tag.
+   * LinkedIn's Ember/Glimmer handlers live there, so focus/click/execCommand only
+   * activate the composer when run in that context.
+   */
+  function executeInMainWorld(code) {
+    return new Promise((resolve) => {
+      const callbackName = '__ldms_cb_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+      const script = document.createElement('script');
+      script.setAttribute('data-linkedin-dm-scheduler', 'true');
+      script.textContent = `
+        (function() {
+          var done = function(result) {
+            window['${callbackName}'](result);
+          };
+          try {
+            (${code})(done);
+          } catch (err) {
+            done({ success: false, error: String(err && err.message || err) });
+          }
+        })();
+      `;
+
+      window[callbackName] = (result) => {
+        try {
+          delete window[callbackName];
+        } catch {
+          window[callbackName] = undefined;
+        }
+        resolve(result);
+        try {
+          script.remove();
+        } catch {
+          // ignore
+        }
+      };
+
+      const root = document.documentElement || document.head || document.body;
+      if (root) {
+        root.appendChild(script);
+      } else {
+        resolve({ success: false, error: 'No document root available' });
+      }
+    });
+  }
+
+  /**
+   * Fills LinkedIn's contenteditable composer. Runs the interaction in the page's
+   * main world first (so Ember/Glimmer handlers fire), then falls back to the
+   * isolated-world approach if injection fails or is blocked.
    */
   async function fillContentEditableComposer(el, text) {
+    // Approach 1: inject into the main world where LinkedIn's JS lives.
+    const mainWorldResult = await fillComposerInMainWorld(text);
+    if (mainWorldResult && mainWorldResult.success) {
+      dispatchComposerEvents(el, text);
+      return;
+    }
+
+    // Approach 2: isolated-world fallback.
+    await fillComposerInIsolatedWorld(el, text);
+  }
+
+  function fillComposerInMainWorld(text) {
+    const messageJson = JSON.stringify(text);
+    const code = function (done) {
+      const el = document.querySelector('div.msg-form__contenteditable[contenteditable="true"]');
+      if (!el) {
+        done({ success: false, error: 'Composer not found in main world' });
+        return;
+      }
+
+      el.focus();
+      el.click();
+
+      const p = el.querySelector('p');
+      if (p) {
+        p.focus();
+        p.click();
+      }
+
+      const target = p || el;
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(target);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      document.execCommand('selectAll', false, null);
+      const inserted = document.execCommand('insertText', false, MESSAGE_TEXT);
+
+      // Trigger input listeners.
+      el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+      el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true }));
+
+      const hasText = (el.textContent || '').trim().length > 0;
+      if (inserted || hasText) {
+        done({ success: true, hasText });
+      } else {
+        done({ success: false, error: 'insertText failed and no text present' });
+      }
+    }.toString().replace('MESSAGE_TEXT', messageJson);
+
+    return executeInMainWorld(code);
+  }
+
+  async function fillComposerInIsolatedWorld(el, text) {
     const paragraph = el.querySelector('p') || el;
 
-    // Approach 1: focus + selection + execCommand.
     el.focus();
     paragraph.focus();
     await wait(300);
@@ -291,15 +392,10 @@
     const inserted = document.execCommand('insertText', false, text);
 
     if (!inserted || !hasRealText(el)) {
-      // Approach 2: direct DOM mutation.
       el.innerHTML = `<p>${escapeHtml(text)}</p>`;
-      inserted &&= false;
     }
 
-    // Approach 3 (always run): nudge Ember's state by simulating a key press.
     await nudgeComposerState(el);
-
-    // Flood the element with events so any framework listeners update state.
     dispatchComposerEvents(el, text);
   }
 
