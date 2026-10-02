@@ -53,6 +53,13 @@
       '.msg-connections-typeahead__dropdown li',
       '.artdeco-typeahead__dropdown [role="option"]'
     ],
+    recipientPill: [
+      '.msg-connections-typeahead__recipient-pill',
+      '.msg-connections-typeahead__selected-recipient',
+      '.msg-connections-typeahead__pill',
+      '.artdeco-pill',
+      '[data-testid="recipient-pill"]'
+    ],
     messageInput: [
       'div.msg-form__contenteditable',
       '.msg-form__contenteditable',
@@ -262,37 +269,81 @@
 
   /**
    * STEP 2: Type the recipient name into the new-message typeahead input.
+   * Returns the input element so step 3 can dispatch Enter on it.
    */
   async function typeRecipientName(recipient) {
     const input = await waitForSelector(SELECTORS.recipientTypeaheadInput, 8000);
     await simulateTyping(input, recipient);
-    // Give LinkedIn time to fetch and render suggestions.
-    await wait(1200);
+    // Wait for LinkedIn to fetch and render suggestions before pressing Enter.
+    await wait(1500);
+    return input;
   }
 
   /**
-   * STEP 3: Select the matching person from the autocomplete dropdown.
+   * STEP 3: Select the first autocomplete suggestion by pressing Enter on the
+   * typeahead input, then wait for the recipient pill to confirm selection.
+   * Falls back to clicking a visible suggestion if Enter does not work.
    */
-  async function selectRecipientSuggestion(recipient) {
-    let suggestion;
-    try {
-      suggestion = await waitForElementWithText(
-        SELECTORS.recipientSuggestions,
-        recipient,
-        8000
-      );
-    } catch {
-      // Fallback: try to use the aria-owns/aria-controls listbox directly.
-      suggestion = findSuggestionInLinkedListbox(recipient);
+  async function selectRecipientSuggestion(recipient, input) {
+    if (!input) {
+      input = await waitForSelector(SELECTORS.recipientTypeaheadInput, 2000);
     }
 
-    if (!suggestion) {
-      throw new Error(`No autocomplete suggestion found for "${recipient}"`);
+    dispatchEnterKey(input);
+    // Wait for the recipient pill to appear, confirming the selection.
+    let pill = await waitForRecipientPill(recipient, 5000).catch(() => null);
+
+    if (!pill) {
+      // Fallback: click a visible suggestion if Enter did not select anything.
+      let suggestion;
+      try {
+        suggestion = await waitForElementWithText(
+          SELECTORS.recipientSuggestions,
+          recipient,
+          5000
+        );
+      } catch {
+        suggestion = findSuggestionInLinkedListbox(recipient);
+      }
+
+      if (!suggestion) {
+        throw new Error(`No autocomplete suggestion found for "${recipient}"`);
+      }
+
+      clickElement(suggestion);
+      pill = await waitForRecipientPill(recipient, 5000).catch(() => null);
+      if (!pill) {
+        throw new Error(`Recipient pill did not appear after selecting "${recipient}"`);
+      }
     }
 
-    clickElement(suggestion);
-    // Wait for the recipient pill to appear and the composer to become ready.
-    await wait(1200);
+    // Wait for the composer to become ready now that the recipient is selected.
+    await wait(800);
+  }
+
+  /**
+   * Dispatch Enter keyboard events on an element.
+   */
+  function dispatchEnterKey(el) {
+    const events = ['keydown', 'keypress', 'keyup'];
+    for (const type of events) {
+      const event = new KeyboardEvent(type, {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true
+      });
+      el.dispatchEvent(event);
+    }
+  }
+
+  /**
+   * Wait for a recipient pill containing the recipient name to appear.
+   */
+  function waitForRecipientPill(recipient, timeout = 5000) {
+    return waitForElementWithText(SELECTORS.recipientPill, recipient, timeout);
   }
 
   /**
@@ -373,8 +424,8 @@
     for (let attempt = 0; attempt < CONFIG.retryAttempts; attempt++) {
       try {
         await clickComposeButton();
-        await typeRecipientName(recipient);
-        await selectRecipientSuggestion(recipient);
+        const recipientInput = await typeRecipientName(recipient);
+        await selectRecipientSuggestion(recipient, recipientInput);
         await typeMessage(text);
         await clickSend();
         // Give LinkedIn time to process the send and update the UI.
