@@ -219,6 +219,9 @@
     $('#export-data').addEventListener('click', exportData);
     $('#import-data').addEventListener('change', importData);
 
+    // Queue list actions (delegated because items are recreated on render)
+    initQueueEventDelegation();
+
     populateTimezoneSelect($('#timezone'), currentSettings.timezone);
     populateTimezoneSelect($('#default-timezone'), currentSettings.timezone);
 
@@ -466,13 +469,9 @@
       return;
     }
 
-    if (!recipient && !profileSlug) {
-      showToast('Please provide a recipient name or a LinkedIn profile URL.', 'error');
-      return;
-    }
-
     if (!recipient) {
-      recipient = profileSlug;
+      showToast('Please provide a recipient name. The LinkedIn URL is optional and used only to disambiguate duplicate names.', 'error');
+      return;
     }
 
     if (!body || !datetime) {
@@ -554,23 +553,37 @@
       list.appendChild(li);
     }
 
-    $$('.edit-message').forEach((btn) =
-      btn.addEventListener('click', async () => {
-        const m = allMessages.find((x) => x.id === btn.dataset.id);
+    // Buttons are rendered dynamically; event delegation is registered once in initQueueEventDelegation().
+  }
+
+  /**
+   * Event delegation for queue item actions. Buttons are recreated on every
+   * renderQueue() call, so delegated listeners avoid stale bindings.
+   */
+  function initQueueEventDelegation() {
+    const list = $('#queue-list');
+
+    list.addEventListener('click', async (e) => {
+      const editBtn = e.target.closest('.edit-message');
+      const deleteBtn = e.target.closest('.delete-message');
+
+      if (editBtn) {
+        const id = editBtn.dataset.id;
+        const m = allMessages.find((x) => x.id === id);
         if (!m) return;
         loadMessageIntoForm(m);
         switchTab('schedule');
-      })
-    );
+        return;
+      }
 
-    $$('.delete-message').forEach((btn) =
-      btn.addEventListener('click', async () => {
+      if (deleteBtn) {
+        const id = deleteBtn.dataset.id;
         if (!confirm('Delete this scheduled message?')) return;
-        await Storage.deleteMessage(btn.dataset.id);
+        await Storage.deleteMessage(id);
         await renderQueue();
         showToast('Message deleted', 'success');
-      })
-    );
+      }
+    });
   }
 
   function loadMessageIntoForm(m) {

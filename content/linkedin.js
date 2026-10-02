@@ -327,12 +327,20 @@
     }
 
     if (target) {
+      // Matched by profile slug: arrow-key down to the target and press Enter.
       const selectedByKeyboard = await selectSuggestionByKeyboard(input, suggestions, target);
       if (!selectedByKeyboard) {
         clickElement(target);
       }
+    } else if (profileSlug) {
+      // A profile slug was provided but no match was found; warn but still fall
+      // back to selecting the first suggestion so the flow does not hard-fail.
+      console.warn(
+        `[LinkedIn DM Scheduler] No suggestion matched slug "${profileSlug}". Falling back to first result.`
+      );
+      dispatchEnterKey(input);
     } else {
-      // No slug match (or no slug provided): press Enter to accept the first suggestion.
+      // No slug provided: press Enter to accept the first suggestion.
       dispatchEnterKey(input);
     }
 
