@@ -21,10 +21,6 @@
   const SELECTORS = {
     // Profile page Message button.
     profileMessageButton: [
-      'button:has(svg#send-privately-small)',
-      'button:has(svg use[href*="send-privately"])',
-      'a:has(svg#send-privately-small)',
-      'a:has(svg use[href*="send-privately"])',
       'svg#send-privately-small',
       'svg use[href*="send-privately"]'
     ],
@@ -190,20 +186,30 @@
     const clickableTag = /^(button|a)$/i;
     const isClickable =
       clickableTag.test(el.tagName) ||
+      el.tagName.toLowerCase() === 'span' ||
       el.getAttribute('role') === 'button' ||
       el.onclick;
     if (!isClickable) {
-      el = el.closest('button, a, [role="button"]') || el;
+      el = el.closest('button, a, span, [role="button"]') || el;
     }
 
     el.scrollIntoView({ block: 'center', inline: 'center' });
-    const clickEvent = new MouseEvent('click', {
-      bubbles: true,
-      cancelable: true,
-      view: window
-    });
-    el.dispatchEvent(clickEvent);
-    if (typeof el.click === 'function') el.click();
+    const events = ['pointerdown', 'mousedown', 'click', 'pointerup', 'mouseup'];
+    for (const type of events) {
+      const event = new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        view: window
+      });
+      el.dispatchEvent(event);
+    }
+    if (typeof el.click === 'function') {
+      try {
+        el.click();
+      } catch (err) {
+        // Some elements throw when programmatically clicked; ignore.
+      }
+    }
   }
 
   /**
@@ -278,18 +284,54 @@
    * Click the Message button on a LinkedIn profile page.
    */
   async function clickProfileMessageButton() {
-    let messageBtn;
-    try {
-      messageBtn = await waitForSelector(SELECTORS.profileMessageButton, 8000);
-    } catch {
-      messageBtn = findButtonByLabel('message');
+    // Profile pages render the action bar dynamically; give it time to appear.
+    await wait(4000);
+
+    let messageBtn = findProfileMessageButton();
+
+    if (!messageBtn) {
+      // LinkedIn sometimes lazily mounts the button; poll briefly.
+      const start = Date.now();
+      while (!messageBtn && Date.now() - start < 8000) {
+        await wait(500);
+        messageBtn = findProfileMessageButton();
+      }
     }
+
     if (!messageBtn) {
       throw new Error('Could not find the Message button on the profile page');
     }
+
     clickElement(messageBtn);
     // Wait for the inline message overlay to open.
     await wait(1500);
+  }
+
+  function findProfileMessageButton() {
+    // Primary: the clickable span wraps svg#send-privately-small.
+    const svg = document.querySelector('svg#send-privately-small');
+    if (svg && isVisible(svg)) {
+      let parent = svg.parentElement;
+      while (parent && parent !== document.body) {
+        if (parent.tagName.toLowerCase() === 'span' || parent.tagName.toLowerCase() === 'button') {
+          if (isVisible(parent)) return parent;
+        }
+        parent = parent.parentElement;
+      }
+    }
+
+    // Fallback 1: any element whose trimmed text is exactly "Message".
+    const candidates = Array.from(document.querySelectorAll('span, button, a, [role="button"]'));
+    const exact = candidates.find(
+      (el) => el.textContent.trim() === 'Message' && isVisible(el)
+    );
+    if (exact) return exact;
+
+    // Fallback 2: any visible element containing "Message" near the top of the profile.
+    const fuzzy = candidates.find(
+      (el) => /\bMessage\b/.test(el.textContent) && isVisible(el)
+    );
+    return fuzzy || null;
   }
 
   // ---------------------------------------------------------------------------

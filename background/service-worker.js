@@ -164,8 +164,9 @@ function ensureLinkedInTab(targetUrl, requireExactUrl = false) {
           resolved = true;
           clearTimeout(timeoutId);
           chrome.tabs.onUpdated.removeListener(onUpdated);
-          // Give the content script a moment to initialize.
-          setTimeout(() => resolve({ id: tabId }), 1500);
+          // Give the content script time to initialize and for LinkedIn's
+          // dynamic chrome (action bar, messaging sidebar) to render.
+          setTimeout(() => resolve({ id: tabId }), 3500);
         };
 
         chrome.tabs.onUpdated.addListener(onUpdated);
