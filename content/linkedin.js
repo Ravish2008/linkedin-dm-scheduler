@@ -227,16 +227,29 @@
    */
   async function simulateTyping(el, text) {
     if (!el) throw new Error('Cannot type into null element');
-    el.focus();
-    el.click();
+
+    // Ensure the composer is in view before interacting with it.
+    el.scrollIntoView({ block: 'center', inline: 'center' });
 
     if (el.isContentEditable) {
-      // Select existing contents so insertText replaces them.
+      // LinkedIn's composer is a contenteditable div that often contains
+      // <p><br></p>. Clicking/focusing the inner <p> is more reliable than
+      // the outer div, which may let the overlay intercept events.
+      const innerParagraph = el.querySelector('p') || el;
+      clickElement(innerParagraph);
+      innerParagraph.focus();
+      el.focus();
+
+      // Place the cursor at the start of the editable paragraph.
       const selection = window.getSelection();
       const range = document.createRange();
-      range.selectNodeContents(el);
+      range.setStart(innerParagraph, 0);
+      range.collapse(true);
       selection.removeAllRanges();
       selection.addRange(range);
+
+      // Let the editor register focus/selection before inserting text.
+      await wait(500);
 
       const inserted = document.execCommand('insertText', false, text);
       if (!inserted) {
@@ -258,6 +271,8 @@
         new KeyboardEvent('keyup', { bubbles: true, cancelable: true })
       );
     } else {
+      el.focus();
+      el.click();
       el.value = text;
 
       const events = ['focus', 'input', 'change', 'keyup'];
