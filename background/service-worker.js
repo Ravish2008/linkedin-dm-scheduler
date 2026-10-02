@@ -11,6 +11,16 @@ const ALARM_NAME = 'check-scheduled-messages';
 const LINKEDIN_MESSAGING_URL = 'https://www.linkedin.com/messaging/';
 let isChecking = false;
 
+// Tab IDs of tabs this extension created (for sends / profile ID lookups).
+// Used to auto-close them after a send operation completes; user-owned tabs
+// are never tracked here and therefore never closed by the extension.
+const extensionCreatedTabs = new Set();
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  // Keep the set clean when tabs are closed manually or by the browser.
+  extensionCreatedTabs.delete(tabId);
+});
+
 // Ensure the periodic check alarm exists.
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create(ALARM_NAME, { periodInMinutes: 1 });
@@ -108,6 +118,7 @@ async function dispatchMessage(message, settings) {
     tab = await ensureLinkedInTab(targetUrl, requireExactUrl);
   } catch (err) {
     await markFailed(message.id, `Could not open LinkedIn tab: ${err.message}`);
+    await closeExtensionCreatedTabs();
     return;
   }
 
@@ -179,6 +190,7 @@ async function dispatchMessage(message, settings) {
   } catch (err) {
     // Tab may not have the content script ready yet.
     await markFailed(message.id, `Dispatch error: ${err.message}`);
+    await closeExtensionCreatedTabs();
     return;
   }
 
@@ -188,6 +200,31 @@ async function dispatchMessage(message, settings) {
     await markSent(message, settings);
   } else {
     await markFailed(message.id, result.error || 'Unknown error from content script');
+  }
+
+  // Close any tabs the extension opened for this send operation (the send
+  // tab and any profile-ID lookup tab). User-owned tabs are never tracked
+  // and therefore never closed.
+  await closeExtensionCreatedTabs();
+}
+
+/**
+ * Closes all tabs that were created by the extension during a send
+ * operation. Tabs already closed manually (or by the browser) are silently
+ * skipped; the tracked set is cleared regardless.
+ */
+async function closeExtensionCreatedTabs() {
+  const tabIds = Array.from(extensionCreatedTabs);
+  extensionCreatedTabs.clear();
+
+  for (const tabId of tabIds) {
+    try {
+      await chrome.tabs.remove(tabId);
+      console.log('[LDMS BG] closed extension-created tab:', tabId);
+    } catch (err) {
+      // Tab was already closed (manually or otherwise); nothing to do.
+      console.log('[LDMS BG] tab already gone:', tabId);
+    }
   }
 }
 
@@ -323,6 +360,9 @@ function ensureLinkedInTab(targetUrl, requireExactUrl = false) {
               return;
             }
             tabId = createdTab.id;
+            // Remember that this tab was created by the extension so it can
+            // be auto-closed after the send operation finishes.
+            extensionCreatedTabs.add(tabId);
           });
         }
       }
