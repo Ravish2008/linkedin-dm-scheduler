@@ -934,21 +934,45 @@
    */
   function extractProfileIdFromPage() {
     // 1. Message button href containing a profileUrn parameter.
-    const links = document.querySelectorAll('a[href*="profileUrn"], a[href*="fsd_profile"]');
+    //    LinkedIn usually URL-encodes the URN (urn%3Ali%3Afsd_profile%3A...),
+    //    so decode the href before matching.
+    const links = document.querySelectorAll(
+      'a[href*="profileUrn"], a[href*="fsd_profile"], a[href*="messaging/compose"]'
+    );
     for (const link of links) {
-      const href = link.getAttribute('href') || '';
+      const rawHref = link.getAttribute('href') || '';
+      let href = rawHref;
+      try {
+        href = decodeURIComponent(rawHref);
+      } catch {
+        // Malformed encoding; keep the raw href.
+      }
       const match = href.match(/profileUrn=urn:li:fsd_profile:([A-Za-z0-9_-]+)/);
       if (match) return match[1];
     }
 
-    // 2. Raw page markup (inline JSON often embeds the URN).
+    // 2. Search the full page markup, both literal and URL-encoded forms.
+    //    Profile data lives in inline scripts and <code> JSON blocks.
     const html = document.documentElement.innerHTML || '';
-    const urnMatch = html.match(/urn:li:fsd_profile:([A-Za-z0-9_-]+)/);
-    if (urnMatch) return urnMatch[1];
+    const sources = [html];
+    try {
+      sources.push(decodeURIComponent(html));
+    } catch {
+      // Not encoded or malformed; the literal form is enough.
+    }
 
-    // 3. Mini-profile variant used in some payloads.
-    const miniMatch = html.match(/urn:li:fs_mini_profile:([A-Za-z0-9_-]+)/);
-    if (miniMatch) return miniMatch[1];
+    // Require a realistic ID length to avoid matching partial/other entities.
+    const patterns = [
+      /urn:li:fsd_profile:([A-Za-z0-9_-]{10,})/,
+      /urn:li:fs_mini_profile:([A-Za-z0-9_-]{10,})/
+    ];
+
+    for (const source of sources) {
+      for (const pattern of patterns) {
+        const match = source.match(pattern);
+        if (match) return match[1];
+      }
+    }
 
     return null;
   }

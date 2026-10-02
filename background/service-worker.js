@@ -205,8 +205,16 @@ function ensureMessagingTab() {
  * Returns the ID or null on failure.
  */
 async function resolveProfileId(message) {
+  if (!message.profileUrl) {
+    console.warn('[LDMS BG] resolveProfileId called without a profileUrl');
+    return null;
+  }
+
+  console.log('[LDMS BG] resolveProfileId for:', message.profileUrl);
+
   try {
     const tab = await ensureLinkedInTab(message.profileUrl, true);
+    console.log('[LDMS BG] profile tab ready:', tab.id, tab.url);
 
     try {
       await chrome.scripting.executeScript({
@@ -217,17 +225,37 @@ async function resolveProfileId(message) {
       console.warn('[LDMS BG] executeScript warning (profile):', err.message);
     }
 
-    const response = await chrome.tabs.sendMessage(tab.id, { action: 'extractProfileId' });
-    if (response && response.success && response.profileId) {
-      console.log('[LDMS BG] extracted profileId:', response.profileId);
-      await Storage.updateMessage(message.id, { profileId: response.profileId });
-      return response.profileId;
-    }
+    // Profile data renders dynamically; retry the extraction a few times.
+    const MAX_ATTEMPTS = 5;
+    const RETRY_DELAY_MS = 2000;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      let response = null;
+      try {
+        response = await chrome.tabs.sendMessage(tab.id, { action: 'extractProfileId' });
+      } catch (err) {
+        console.warn(`[LDMS BG] extractProfileId attempt ${attempt} error:`, err.message);
+      }
 
-    console.warn('[LDMS BG] profile ID extraction returned no ID:', response && response.error);
+      if (response && response.success && response.profileId) {
+        console.log(`[LDMS BG] extracted profileId on attempt ${attempt}:`, response.profileId);
+        await Storage.updateMessage(message.id, { profileId: response.profileId });
+        return response.profileId;
+      }
+
+      console.warn(
+        `[LDMS BG] extractProfileId attempt ${attempt}/${MAX_ATTEMPTS} returned:`,
+        response ? `${response.success ? 'success' : 'failure'}: ${response.error || 'no ID'}` : 'no response'
+      );
+
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+      }
+    }
   } catch (err) {
     console.warn('[LDMS BG] profile ID extraction failed:', err.message);
   }
+
+  console.warn('[LDMS BG] could not resolve profile ID; falling back to typeahead flow');
   return null;
 }
 
