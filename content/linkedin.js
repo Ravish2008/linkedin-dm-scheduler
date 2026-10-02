@@ -938,32 +938,35 @@
   // Listen for commands from the popup / background service worker.
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'sendLinkedInMessage') {
-      const OPERATION_TIMEOUT_MS = 60000;
+      // Acknowledge immediately and close the message channel to avoid the
+      // "message channel closed before a response was received" error.
+      try {
+        sendResponse({ received: true });
+      } catch {
+        // Channel may already be closed.
+      }
 
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(
-          () => reject(new Error('Operation timed out after 60 seconds')),
-          OPERATION_TIMEOUT_MS
-        );
-      });
+      // Run the long send operation out-of-band and report completion via
+      // a separate chrome.runtime.sendMessage.
+      (async () => {
+        try {
+          await sendLinkedInMessage(request.payload);
+          chrome.runtime.sendMessage({
+            action: 'sendComplete',
+            messageId: request.payload.id,
+            success: true
+          });
+        } catch (err) {
+          chrome.runtime.sendMessage({
+            action: 'sendComplete',
+            messageId: request.payload.id,
+            success: false,
+            error: String(err && err.message || err)
+          });
+        }
+      })();
 
-      Promise.race([sendLinkedInMessage(request.payload), timeoutPromise])
-        .then(() => {
-          try {
-            sendResponse({ success: true });
-          } catch {
-            // sendResponse may throw if the channel is already closed.
-          }
-        })
-        .catch((err) => {
-          try {
-            sendResponse({ success: false, error: String(err && err.message || err) });
-          } catch {
-            // sendResponse may throw if the channel is already closed.
-          }
-        });
-
-      return true; // async response
+      return false;
     }
 
     if (request.action === 'getConnections') {

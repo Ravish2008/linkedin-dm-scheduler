@@ -95,28 +95,66 @@ async function dispatchMessage(message, settings) {
     return;
   }
 
+  // Use an out-of-band completion message instead of holding the message
+  // channel open, which can time out during long navigation/type/send flows.
+  const COMPLETE_TIMEOUT_MS = 90000;
+  let completed = false;
+
+  const completionPromise = new Promise((resolve) => {
+    const timeoutId = setTimeout(() => {
+      if (!completed) {
+        completed = true;
+        cleanup();
+        resolve({ success: false, error: 'No sendComplete received within 90 seconds' });
+      }
+    }, COMPLETE_TIMEOUT_MS);
+
+    function onMessage(request, sender) {
+      if (
+        request.action === 'sendComplete' &&
+        request.messageId === message.id
+      ) {
+        if (completed) return;
+        completed = true;
+        clearTimeout(timeoutId);
+        cleanup();
+        resolve({
+          success: !!request.success,
+          error: request.error || null
+        });
+      }
+    }
+
+    function cleanup() {
+      chrome.runtime.onMessage.removeListener(onMessage);
+    }
+
+    chrome.runtime.onMessage.addListener(onMessage);
+  });
+
   try {
-    const response = await chrome.tabs.sendMessage(tab.id, {
+    await chrome.tabs.sendMessage(tab.id, {
       action: 'sendLinkedInMessage',
       payload: {
+        id: message.id,
         recipient: message.recipient,
         text: message.text,
         profileUrl: message.profileUrl || null,
         profileSlug: message.profileSlug || null
       }
     });
-
-    if (response && response.success) {
-      await markSent(message, settings);
-    } else {
-      await markFailed(
-        message.id,
-        (response && response.error) || 'Unknown error from content script'
-      );
-    }
   } catch (err) {
     // Tab may not have the content script ready yet.
     await markFailed(message.id, `Dispatch error: ${err.message}`);
+    return;
+  }
+
+  const result = await completionPromise;
+
+  if (result.success) {
+    await markSent(message, settings);
+  } else {
+    await markFailed(message.id, result.error || 'Unknown error from content script');
   }
 }
 
@@ -207,23 +245,15 @@ function ensureLinkedInTab(targetUrl, requireExactUrl = false) {
 }
 
 /**
- * Marks a message as sent, schedules the next recurrence if needed, and notifies.
+ * Marks a message as sent, recurs if needed, and notifies.
  */
 async function markSent(message, settings) {
-  const now = Date.now();
-  const updates = {
-    status: 'sent',
-    sentAt: now,
-    error: null
-  };
-
+  const sentAt = Date.now();
+  const updates = { status: 'sent', sentAt, error: null };
   await Storage.updateMessage(message.id, updates);
 
-  if (message.recurrence && message.recurrence !== 'none') {
-    const nextScheduledAt = computeNextOccurrence(
-      message.scheduledAt,
-      message.recurrence
-    );
+  if (message.recurrence) {
+    const nextScheduledAt = computeNextOccurrence(message.scheduledAt, message.recurrence);
     if (nextScheduledAt) {
       await Storage.addMessage({
         recipient: message.recipient,
