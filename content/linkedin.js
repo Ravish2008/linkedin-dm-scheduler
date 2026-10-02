@@ -752,6 +752,22 @@
   // ---------------------------------------------------------------------------
 
   function findComposerInOverlay() {
+    console.log('[LDMS] findComposerInOverlay start');
+    const allEditable = document.querySelectorAll('[contenteditable]');
+    const msgEditable = document.querySelectorAll('div.msg-form__contenteditable');
+    const bubbles = document.querySelectorAll('.msg-overlay-conversation-bubble');
+    console.log(
+      `[LDMS] contenteditable count=${allEditable.length}, msg-form__contenteditable count=${msgEditable.length}, bubbles count=${bubbles.length}`
+    );
+
+    for (let i = 0; i < allEditable.length; i++) {
+      const el = allEditable[i];
+      const parentClass = el.parentElement ? el.parentElement.className : 'none';
+      console.log(
+        `[LDMS] contenteditable[${i}] tag=${el.tagName}, className=${el.className}, parentClass=${parentClass}, outerHTML=${(el.outerHTML || '').slice(0, 200)}`
+      );
+    }
+
     // Search inside the overlay container first.
     for (const containerSelector of SELECTORS.overlayContainer) {
       const container = document.querySelector(containerSelector);
@@ -764,10 +780,26 @@
           : `${containerSelector} ${inputSelector}`;
         try {
           const el = document.querySelector(selector);
-          if (el) return el;
+          if (el) {
+            console.log('[LDMS] found composer via overlay selector:', selector);
+            return el;
+          }
         } catch {
           // Invalid selector combination; skip.
         }
+      }
+    }
+
+    // Try querying directly inside each overlay bubble.
+    for (const bubble of bubbles) {
+      try {
+        const el = bubble.querySelector('div.msg-form__contenteditable[contenteditable="true"]');
+        if (el) {
+          console.log('[LDMS] found composer inside overlay bubble');
+          return el;
+        }
+      } catch {
+        // ignore
       }
     }
 
@@ -775,18 +807,26 @@
     const direct = document.querySelector(
       'div.msg-form__contenteditable[contenteditable="true"]'
     );
-    if (direct) return direct;
+    if (direct) {
+      console.log('[LDMS] found composer via direct global selector');
+      return direct;
+    }
 
-    return document.querySelector('div[contenteditable="true"][role="textbox"]') || null;
+    const fallback = document.querySelector('div[contenteditable="true"][role="textbox"]');
+    if (fallback) {
+      console.log('[LDMS] found composer via role=textbox fallback');
+    }
+    return fallback || null;
   }
 
   /**
    * Wait for the message composer to appear.
    * - Polls up to 15 seconds.
    * - First looks inside any visible overlay bubble.
-   * - Falls back to the broader selector list.
+   * - Falls back to the broader selector list and cross-origin iframes.
    */
   async function waitForComposer(timeout = 15000) {
+    console.log('[LDMS] waitForComposer start');
     const start = Date.now();
     return new Promise((resolve, reject) => {
       function search() {
@@ -798,11 +838,20 @@
 
         const broad = waitForSelectorSync(SELECTORS.messageInput);
         if (broad) {
+          console.log('[LDMS] found composer via broad selector list');
           resolve(broad);
           return;
         }
 
+        const iframeComposer = findComposerInIframes();
+        if (iframeComposer) {
+          console.log('[LDMS] found composer inside an iframe');
+          resolve(iframeComposer);
+          return;
+        }
+
         if (Date.now() - start > timeout) {
+          console.error('[LDMS] timed out waiting for composer');
           reject(new Error('Timed out waiting for the message composer'));
           return;
         }
@@ -810,6 +859,22 @@
       }
       search();
     });
+  }
+
+  function findComposerInIframes() {
+    const iframes = document.querySelectorAll('iframe');
+    for (const iframe of iframes) {
+      try {
+        const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+        const el = iframeDoc.querySelector('div.msg-form__contenteditable[contenteditable="true"]');
+        if (el) return el;
+        const fallback = iframeDoc.querySelector('[contenteditable="true"]');
+        if (fallback) return fallback;
+      } catch {
+        // Cross-origin or inaccessible iframe; skip.
+      }
+    }
+    return null;
   }
 
   function waitForSelectorSync(selectors) {
