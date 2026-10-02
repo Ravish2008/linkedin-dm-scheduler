@@ -863,12 +863,13 @@
   // ---------------------------------------------------------------------------
 
   /**
-   * Send a LinkedIn DM via the messaging page compose flow:
-   * pencil icon → typeahead search by name → select suggestion → type → send.
-   * A profileSlug (from a profile URL) is used only to disambiguate duplicate
-   * names in the typeahead dropdown.
+   * Send a LinkedIn DM.
+   * - When composePrefilled is true (compose URL with profileUrn), the
+   *   recipient is already selected; just type and send.
+   * - Otherwise use the typeahead flow: pencil icon → search by name →
+   *   select suggestion → type → send. profileSlug disambiguates duplicates.
    */
-  async function sendLinkedInMessage({ recipient, text, profileSlug }) {
+  async function sendLinkedInMessage({ recipient, text, profileSlug, composePrefilled }) {
     if (!recipient || !text) {
       throw new Error('Recipient and message text are required.');
     }
@@ -876,12 +877,18 @@
     let lastError;
     for (let attempt = 0; attempt < CONFIG.retryAttempts; attempt++) {
       try {
-        await clickComposeButton();
-        const recipientInput = await typeRecipientName(recipient);
-        await selectRecipientSuggestion(recipient, profileSlug || null, recipientInput);
+        if (composePrefilled) {
+          // Compose URL flow: recipient pre-filled via profileUrn.
+          await typeMessage(text);
+          await clickSend();
+        } else {
+          await clickComposeButton();
+          const recipientInput = await typeRecipientName(recipient);
+          await selectRecipientSuggestion(recipient, profileSlug || null, recipientInput);
 
-        await typeMessage(text);
-        await clickSend();
+          await typeMessage(text);
+          await clickSend();
+        }
         await wait(1500);
         return;
       } catch (err) {
@@ -895,6 +902,31 @@
     }
 
     throw lastError || new Error(`Could not send message to ${recipient}`);
+  }
+
+  /**
+   * Extracts the internal LinkedIn profile ID (e.g. ACoAADj7MEIBY...) from a
+   * profile page. Used to build the direct compose URL.
+   */
+  function extractProfileIdFromPage() {
+    // 1. Message button href containing a profileUrn parameter.
+    const links = document.querySelectorAll('a[href*="profileUrn"], a[href*="fsd_profile"]');
+    for (const link of links) {
+      const href = link.getAttribute('href') || '';
+      const match = href.match(/profileUrn=urn:li:fsd_profile:([A-Za-z0-9_-]+)/);
+      if (match) return match[1];
+    }
+
+    // 2. Raw page markup (inline JSON often embeds the URN).
+    const html = document.documentElement.innerHTML || '';
+    const urnMatch = html.match(/urn:li:fsd_profile:([A-Za-z0-9_-]+)/);
+    if (urnMatch) return urnMatch[1];
+
+    // 3. Mini-profile variant used in some payloads.
+    const miniMatch = html.match(/urn:li:fs_mini_profile:([A-Za-z0-9_-]+)/);
+    if (miniMatch) return miniMatch[1];
+
+    return null;
   }
 
   /**
@@ -957,6 +989,21 @@
       try {
         const names = extractConnections();
         sendResponse({ success: true, connections: names });
+      } catch (err) {
+        sendResponse({ success: false, error: String(err && err.message || err) });
+      }
+      return false;
+    }
+
+    if (request.action === 'extractProfileId') {
+      console.log('[LDMS] extractProfileId on tab', window.location.href);
+      try {
+        const profileId = extractProfileIdFromPage();
+        if (profileId) {
+          sendResponse({ success: true, profileId });
+        } else {
+          sendResponse({ success: false, error: 'Profile ID not found on page' });
+        }
       } catch (err) {
         sendResponse({ success: false, error: String(err && err.message || err) });
       }

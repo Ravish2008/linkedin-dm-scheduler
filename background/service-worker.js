@@ -79,21 +79,39 @@ async function resetSendingMessages() {
 
 /**
  * Dispatches a single message to the LinkedIn messaging tab.
- * Always uses the messaging page compose flow; profileSlug (if present) is
- * passed along for typeahead disambiguation of duplicate names.
+ * - When a profileUrl is present, the internal profile ID is resolved (with
+ *   caching) and the direct compose URL is used, which pre-fills the
+ *   recipient — no typeahead search needed.
+ * - Otherwise the messaging page compose flow is used, with profileSlug for
+ *   typeahead disambiguation of duplicate names.
  */
 async function dispatchMessage(message, settings) {
+  let targetUrl = LINKEDIN_MESSAGING_URL;
+  let requireExactUrl = false;
+  let composePrefilled = false;
+
+  if (message.profileUrl) {
+    let profileId = message.profileId || null;
+    if (!profileId) {
+      profileId = await resolveProfileId(message);
+    }
+    if (profileId) {
+      targetUrl = `https://www.linkedin.com/messaging/compose/?profileUrn=urn:li:fsd_profile:${profileId}&recipient=${profileId}`;
+      requireExactUrl = true;
+      composePrefilled = true;
+    }
+    // If no ID could be resolved, fall back to the plain messaging flow.
+  }
+
   let tab;
   try {
-    // Always use the full messaging page — the compose flow works reliably
-    // there and the composer lives in the main document.
-    tab = await ensureMessagingTab();
+    tab = await ensureLinkedInTab(targetUrl, requireExactUrl);
   } catch (err) {
     await markFailed(message.id, `Could not open LinkedIn tab: ${err.message}`);
     return;
   }
 
-  console.log('[LDMS BG] sending to tab', tab.id, 'url:', tab.url);
+  console.log('[LDMS BG] sending to tab', tab.id, 'url:', tab.url, 'composePrefilled:', composePrefilled);
 
   // Inject only the content script. utils/storage.js and utils/templates.js
   // are already loaded by the manifest content_scripts declaration; injecting
@@ -154,7 +172,8 @@ async function dispatchMessage(message, settings) {
         id: message.id,
         recipient: message.recipient,
         text: message.text,
-        profileSlug: message.profileSlug || null
+        profileSlug: message.profileSlug || null,
+        composePrefilled
       }
     });
   } catch (err) {
@@ -177,6 +196,39 @@ async function dispatchMessage(message, settings) {
  */
 function ensureMessagingTab() {
   return ensureLinkedInTab(LINKEDIN_MESSAGING_URL);
+}
+
+/**
+ * Resolves the internal LinkedIn profile ID for a message's profileUrl by
+ * visiting the profile page and asking the content script to extract it.
+ * The result is cached on the message record so it only happens once.
+ * Returns the ID or null on failure.
+ */
+async function resolveProfileId(message) {
+  try {
+    const tab = await ensureLinkedInTab(message.profileUrl, true);
+
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['content/linkedin.js']
+      });
+    } catch (err) {
+      console.warn('[LDMS BG] executeScript warning (profile):', err.message);
+    }
+
+    const response = await chrome.tabs.sendMessage(tab.id, { action: 'extractProfileId' });
+    if (response && response.success && response.profileId) {
+      console.log('[LDMS BG] extracted profileId:', response.profileId);
+      await Storage.updateMessage(message.id, { profileId: response.profileId });
+      return response.profileId;
+    }
+
+    console.warn('[LDMS BG] profile ID extraction returned no ID:', response && response.error);
+  } catch (err) {
+    console.warn('[LDMS BG] profile ID extraction failed:', err.message);
+  }
+  return null;
 }
 
 /**
@@ -269,7 +321,8 @@ async function markSent(message, settings) {
         scheduledAt: nextScheduledAt,
         status: 'pending',
         profileUrl: message.profileUrl || null,
-        profileSlug: message.profileSlug || null
+        profileSlug: message.profileSlug || null,
+        profileId: message.profileId || null
       });
     }
   }
