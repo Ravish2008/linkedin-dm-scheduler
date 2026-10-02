@@ -291,6 +291,11 @@
    * Click the Message button on a LinkedIn profile page.
    */
   async function clickProfileMessageButton() {
+    // If the overlay is already active, do not click again (avoids closing it on retries).
+    if (isProfileOverlayOpen()) {
+      return;
+    }
+
     // Profile pages render the action bar dynamically; give it time to appear.
     await wait(4000);
 
@@ -311,7 +316,15 @@
 
     clickElement(messageBtn);
     // Wait for the inline message overlay and its composer to fully render.
-    await wait(3500);
+    await wait(5000);
+  }
+
+  function isProfileOverlayOpen() {
+    return !!(
+      document.querySelector('.msg-overlay-conversation-bubble--is-active') ||
+      document.querySelector('.msg-overlay-conversation-bubble--active') ||
+      document.querySelector('.msg-overlay-conversation-bubble .msg-form__contenteditable[contenteditable="true"]')
+    );
   }
 
   function findProfileMessageButton() {
@@ -561,13 +574,20 @@
           : `${containerSelector} ${inputSelector}`;
         try {
           const el = document.querySelector(selector);
-          if (el && isVisible(el)) return el;
+          if (el) return el;
         } catch {
           // Invalid selector combination; skip.
         }
       }
     }
-    return null;
+
+    // Direct global fallback without requiring a container.
+    const direct = document.querySelector(
+      'div.msg-form__contenteditable[contenteditable="true"]'
+    );
+    if (direct) return direct;
+
+    return document.querySelector('div[contenteditable="true"][role="textbox"]') || null;
   }
 
   /**
@@ -586,14 +606,10 @@
           return;
         }
 
-        try {
-          const broad = waitForSelectorSync(SELECTORS.messageInput);
-          if (broad && isVisible(broad)) {
-            resolve(broad);
-            return;
-          }
-        } catch {
-          // ignore
+        const broad = waitForSelectorSync(SELECTORS.messageInput);
+        if (broad) {
+          resolve(broad);
+          return;
         }
 
         if (Date.now() - start > timeout) {
