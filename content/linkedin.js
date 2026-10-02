@@ -2,11 +2,12 @@
  * Content script for LinkedIn messaging automation.
  * Injected into https://www.linkedin.com/messaging/*
  *
- * Handles:
- * - Opening the conversation with a recipient.
- * - Typing the message.
- * - Sending the message.
- * - Reporting success/failure back to the service worker.
+ * Correct send flow (executed in order):
+ * 1. Click the pencil/compose button in the messaging sidebar.
+ * 2. Wait for the new-message overlay's recipient typeahead input and type the name.
+ * 3. Wait for autocomplete suggestions and click the matching person.
+ * 4. Wait for the message composer and type the message.
+ * 5. Click the send button.
  */
 
 (function () {
@@ -19,8 +20,9 @@
   const SELECTORS = {
     composeButton: [
       'button:has(svg use[href="#compose-medium"])',
-      'button:has(svg use[href*="open-in-new"])',
+      'button:has(svg use[href*="compose"])',
       'button svg use[href="#compose-medium"]',
+      'button svg use[href*="compose"]',
       'button svg use[href*="open-in-new"]',
       'li-icon[type="compose-medium"]',
       'button[aria-label^="Compose a new message" i]',
@@ -35,61 +37,37 @@
       '.msg-compose-btn button',
       '.msg-overlay-list-bubble-header button'
     ],
-    conversationSearchInput: [
-      'input[placeholder*="Search messages" i]',
-      'input[aria-label*="Search messages" i]',
-      'input[aria-label*="Search" i]',
-      '.msg-overlay-list-bubble-search__search-box input',
-      '.msg-overlay-list-bubble-search__input',
-      '#search-conversations',
-      'input[placeholder*="Search" i]'
+    recipientTypeaheadInput: [
+      "input.msg-connections-typeahead__search-field[placeholder='Type a name or multiple names'][role='combobox']",
+      'input.msg-connections-typeahead__search-field[role="combobox"]',
+      'input.msg-connections-typeahead__search-field',
+      'input[role="combobox"][placeholder*="name" i]',
+      '.msg-connections-typeahead__search-field'
     ],
-    composeSearchInput: [
-      'input[aria-label*="Search by name" i]',
-      'input[placeholder*="name" i]',
-      'div[contenteditable="true"][aria-label*="Search" i]',
-      'div[contenteditable="true"][aria-label*="name" i]',
-      '.msg-connections-search__input',
-      '.msg-connections-search__contenteditable',
-      '.msg-overlay-list-bubble__search-recipient input',
-      '.msg-overlay-list-bubble__search-recipient [contenteditable="true"]',
-      '[role="combobox"] input',
-      '[role="combobox"] [contenteditable="true"]'
-    ],
-    searchResultItems: [
-      '.msg-connections-result__connection-item',
-      '.msg-connections-result-list button',
-      '[data-test-msg-to-selector] button',
-      '[data-testid="connection-list-item"]',
-      '.msg-overlay-list-bubble__content .artdeco-button',
-      '.msg-overlay-list-bubble__content button',
-      '[role="listbox"] button',
-      '[role="option"]'
+    recipientSuggestions: [
+      '.msg-connections-typeahead__suggestion',
+      '.msg-connections-typeahead__result',
+      '.artdeco-typeahead__result',
+      '[role="listbox"] [role="option"]',
+      '.msg-connections-typeahead__dropdown [role="option"]',
+      '.msg-connections-typeahead__dropdown li',
+      '.artdeco-typeahead__dropdown [role="option"]'
     ],
     messageInput: [
       'div.msg-form__contenteditable',
       '.msg-form__contenteditable',
       '.msg-overlay-conversation-bubble .msg-form__contenteditable',
       '.msg-overlay-conversation-bubble [contenteditable="true"]',
-      'div.msg-form__contenteditable p[contenteditable="true"]',
       'div[contenteditable="true"][role="textbox"]',
-      'div[contenteditable="true"]',
-      '[role="textbox"]'
+      'div[contenteditable="true"]'
     ],
     sendButton: [
-      "button.msg-form__send-button.artdeco-button.artdeco-button--1[type='submit']",
+      "button.msg-form__send-button[type='submit']",
       'button[type="submit"].msg-form__send-button',
       'button.msg-form__send-button',
       'button[aria-label*="Send" i]',
       'button[aria-label="Send message"]',
       '.msg-form__send-button'
-    ],
-    conversationListItems: [
-      '.msg-conversation-listitem',
-      '.msg-conversation-card',
-      '.msg-overlay-list-bubble__content li',
-      'a[href^="/messaging/thread/"]',
-      '.msg-conversation-listitem__participant-names'
     ]
   };
 
@@ -118,10 +96,14 @@
     return new Promise((resolve, reject) => {
       function search() {
         for (const selector of selectorsArray) {
-          const el = root.querySelector(selector);
-          if (el && isVisible(el)) {
-            resolve(el);
-            return;
+          try {
+            const el = root.querySelector(selector);
+            if (el && isVisible(el)) {
+              resolve(el);
+              return;
+            }
+          } catch (err) {
+            // Invalid :has() selector in very old browsers; ignore and try next.
           }
         }
         if (Date.now() - start > timeout) {
@@ -147,9 +129,9 @@
         for (const selector of selectorsArray) {
           const elements = Array.from(document.querySelectorAll(selector));
           const match = elements.find((el) =>
-            el.textContent.toLowerCase().includes(lowerText)
+            el.textContent.toLowerCase().includes(lowerText) && isVisible(el)
           );
-          if (match && isVisible(match)) {
+          if (match) {
             resolve(match);
             return;
           }
@@ -193,9 +175,7 @@
       el.getAttribute('role') === 'button' ||
       el.onclick;
     if (!isClickable) {
-      el =
-        el.closest('button, a, [role="button"]') ||
-        el;
+      el = el.closest('button, a, [role="button"]') || el;
     }
 
     el.scrollIntoView({ block: 'center', inline: 'center' });
@@ -246,7 +226,117 @@
   }
 
   /**
-   * Find and click the send button.
+   * STEP 1: Click the pencil/compose button to open the new-message overlay.
+   */
+  async function clickComposeButton() {
+    // If the overlay is already open, do not click compose again (avoids closing it).
+    const alreadyOpen = await hasVisibleRecipientInput();
+    if (alreadyOpen) return;
+
+    let composeBtn;
+    try {
+      composeBtn = await waitForSelector(SELECTORS.composeButton, 8000);
+    } catch {
+      composeBtn = findButtonByLabel('compose') || findButtonByLabel('new message');
+    }
+    if (!composeBtn) {
+      throw new Error('Could not find the compose/new message (pencil) button');
+    }
+
+    clickElement(composeBtn);
+    // Wait for the overlay animation and the typeahead input to appear.
+    await wait(1200);
+  }
+
+  /**
+   * Returns true if the recipient typeahead input is already visible.
+   */
+  async function hasVisibleRecipientInput() {
+    try {
+      const input = await waitForSelector(SELECTORS.recipientTypeaheadInput, 1500);
+      return !!input;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * STEP 2: Type the recipient name into the new-message typeahead input.
+   */
+  async function typeRecipientName(recipient) {
+    const input = await waitForSelector(SELECTORS.recipientTypeaheadInput, 8000);
+    await simulateTyping(input, recipient);
+    // Give LinkedIn time to fetch and render suggestions.
+    await wait(1200);
+  }
+
+  /**
+   * STEP 3: Select the matching person from the autocomplete dropdown.
+   */
+  async function selectRecipientSuggestion(recipient) {
+    let suggestion;
+    try {
+      suggestion = await waitForElementWithText(
+        SELECTORS.recipientSuggestions,
+        recipient,
+        8000
+      );
+    } catch {
+      // Fallback: try to use the aria-owns/aria-controls listbox directly.
+      suggestion = findSuggestionInLinkedListbox(recipient);
+    }
+
+    if (!suggestion) {
+      throw new Error(`No autocomplete suggestion found for "${recipient}"`);
+    }
+
+    clickElement(suggestion);
+    // Wait for the recipient pill to appear and the composer to become ready.
+    await wait(1200);
+  }
+
+  /**
+   * Helper: locate the suggestions menu via the typeahead's ARIA attributes.
+   */
+  function findSuggestionInLinkedListbox(recipient) {
+    const inputs = document.querySelectorAll(
+      SELECTORS.recipientTypeaheadInput.join(', ')
+    );
+    const lower = recipient.toLowerCase();
+
+    for (const input of inputs) {
+      const listboxIds =
+        (input.getAttribute('aria-owns') || input.getAttribute('aria-controls') || '')
+          .split(/\s+/)
+          .filter(Boolean);
+      for (const id of listboxIds) {
+        const listbox = document.getElementById(id);
+        if (!listbox) continue;
+        const options = listbox.querySelectorAll('[role="option"], li, button');
+        for (const option of options) {
+          if (
+            option.textContent.toLowerCase().includes(lower) &&
+            isVisible(option)
+          ) {
+            return option;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * STEP 4: Type the message into the composer.
+   */
+  async function typeMessage(text) {
+    const input = await waitForSelector(SELECTORS.messageInput, 8000);
+    await simulateTyping(input, text);
+    await wait(600);
+  }
+
+  /**
+   * STEP 5: Click the send button.
    */
   async function clickSend() {
     let sendBtn;
@@ -258,126 +348,49 @@
     if (!sendBtn) {
       throw new Error('Could not find the send button');
     }
+    if (sendBtn.disabled) {
+      // Wait briefly in case the button is still enabling.
+      await wait(1500);
+      if (sendBtn.disabled) {
+        throw new Error('Send button is disabled');
+      }
+    }
+
     await randomDelay(400);
     clickElement(sendBtn);
-    await wait(1200);
-  }
-
-  /**
-   * Try to find an existing conversation for the recipient in the left rail.
-   */
-  async function tryExistingConversation(recipient) {
-    try {
-      const searchInput = await waitForSelector(
-        SELECTORS.conversationSearchInput,
-        5000
-      );
-      await simulateTyping(searchInput, recipient);
-      await wait(1500);
-
-      const item = await waitForElementWithText(
-        SELECTORS.conversationListItems,
-        recipient,
-        6000
-      );
-      const clickable =
-        item.closest('.msg-conversation-listitem, .msg-conversation-card, li, a[href^="/messaging/thread/"]') ||
-        item;
-      clickElement(clickable);
-      await wait(1500);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Use the compose flow to start a new conversation.
-   */
-  async function openConversationViaCompose(recipient) {
-    let composeBtn;
-    try {
-      composeBtn = await waitForSelector(SELECTORS.composeButton, 6000);
-    } catch {
-      composeBtn = findButtonByLabel('compose') || findButtonByLabel('new message');
-    }
-    if (!composeBtn) {
-      throw new Error('Could not find the compose/new message button');
-    }
-    clickElement(composeBtn);
     await wait(1500);
-
-    const searchInput = await waitForSelector(SELECTORS.composeSearchInput, 8000);
-    await simulateTyping(searchInput, recipient);
-    await wait(1500);
-
-    const resultItems = document.querySelectorAll(
-      SELECTORS.searchResultItems.join(', ')
-    );
-
-    let selected;
-    for (const item of resultItems) {
-      if (
-        item.textContent.toLowerCase().includes(recipient.toLowerCase()) ||
-        item.getAttribute('aria-label')?.toLowerCase().includes(recipient.toLowerCase())
-      ) {
-        selected = item;
-        break;
-      }
-    }
-
-    if (!selected) {
-      throw new Error(`No matching search results found for "${recipient}"`);
-    }
-
-    clickElement(selected);
-    await wait(2000);
   }
 
   /**
-   * Open the conversation for a recipient, falling back between strategies.
-   */
-  async function openConversation(recipient) {
-    let lastError;
-    for (let attempt = 0; attempt < CONFIG.retryAttempts; attempt++) {
-      try {
-        const foundExisting = await tryExistingConversation(recipient);
-        if (foundExisting) return;
-
-        await openConversationViaCompose(recipient);
-        return;
-      } catch (err) {
-        lastError = err;
-        console.warn(`[LinkedIn DM Scheduler] openConversation attempt ${attempt + 1} failed:`, err);
-        await randomDelay(1500);
-      }
-    }
-    throw lastError || new Error(`Could not open conversation with ${recipient}`);
-  }
-
-  /**
-   * Type and send the message.
-   */
-  async function typeAndSend(text) {
-    const input = await waitForSelector(SELECTORS.messageInput, 12000);
-    await simulateTyping(input, text);
-    await randomDelay(600);
-    await clickSend();
-  }
-
-  /**
-   * Send a LinkedIn DM.
+   * Send a LinkedIn DM by executing the 5-step flow in order with retries.
    */
   async function sendLinkedInMessage({ recipient, text }) {
     if (!recipient || !text) {
       throw new Error('Recipient and message text are required.');
     }
 
-    await openConversation(recipient);
-    await typeAndSend(text);
+    let lastError;
+    for (let attempt = 0; attempt < CONFIG.retryAttempts; attempt++) {
+      try {
+        await clickComposeButton();
+        await typeRecipientName(recipient);
+        await selectRecipientSuggestion(recipient);
+        await typeMessage(text);
+        await clickSend();
+        // Give LinkedIn time to process the send and update the UI.
+        await wait(1500);
+        return;
+      } catch (err) {
+        lastError = err;
+        console.warn(
+          `[LinkedIn DM Scheduler] send attempt ${attempt + 1} failed:`,
+          err.message
+        );
+        await randomDelay(1500);
+      }
+    }
 
-    // Wait briefly to let LinkedIn process the send.
-    await wait(1500);
+    throw lastError || new Error(`Could not send message to ${recipient}`);
   }
 
   /**
