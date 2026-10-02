@@ -97,11 +97,12 @@ async function dispatchMessage(message, settings) {
 
   console.log('[LDMS BG] sending to tab', tab.id, 'url:', tab.url);
 
-  // Explicitly inject the content script into the exact tab so we know it is
-  // present before sending the command.
+  // Explicitly inject the content script into every frame of the exact tab.
+  // LinkedIn renders the messaging overlay inside an iframe, so the script must
+  // run there as well as in the top frame.
   try {
     await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
+      target: { tabId: tab.id, allFrames: true },
       files: ['utils/storage.js', 'utils/templates.js', 'content/linkedin.js']
     });
   } catch (err) {
@@ -127,14 +128,17 @@ async function dispatchMessage(message, settings) {
         request.action === 'sendComplete' &&
         request.messageId === message.id
       ) {
-        if (completed) return;
-        completed = true;
-        clearTimeout(timeoutId);
-        cleanup();
-        resolve({
-          success: !!request.success,
-          error: request.error || null
-        });
+        // Multiple frames may respond; the first successful one wins.
+        // Failures are ignored until the timeout expires.
+        if (request.success) {
+          if (completed) return;
+          completed = true;
+          clearTimeout(timeoutId);
+          cleanup();
+          resolve({ success: true, error: null });
+        } else {
+          console.log('[LDMS BG] frame reported failure:', request.error);
+        }
       }
     }
 
