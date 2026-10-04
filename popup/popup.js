@@ -222,6 +222,9 @@
     // Queue list actions (delegated because items are recreated on render)
     initQueueEventDelegation();
 
+    // Template list actions (delegated because items are recreated on render)
+    initTemplatesEventDelegation();
+
     populateTimezoneSelect($('#timezone'), currentSettings.timezone);
     populateTimezoneSelect($('#default-timezone'), currentSettings.timezone);
 
@@ -425,28 +428,40 @@
       `;
       list.appendChild(li);
     }
+  }
 
-    $$('.edit-template').forEach((btn) =
-      btn.addEventListener('click', async () => {
+  /**
+   * Event delegation for template item actions. Buttons are recreated on every
+   * renderTemplatesList() call, so a delegated listener avoids stale bindings.
+   */
+  function initTemplatesEventDelegation() {
+    const list = $('#templates-list');
+
+    list.addEventListener('click', async (e) => {
+      const editBtn = e.target.closest('.edit-template');
+      const deleteBtn = e.target.closest('.delete-template');
+
+      if (editBtn) {
+        const id = editBtn.dataset.id;
         const templates = await Storage.getTemplates();
-        const t = templates.find((x) => x.id === btn.dataset.id);
+        const t = templates.find((x) => x.id === id);
         if (!t) return;
         $('#template-edit-id').value = t.id;
         $('#template-name').value = t.name;
         $('#template-body').value = t.body;
         $('#cancel-template-edit').classList.remove('hidden');
         switchTab('templates');
-      })
-    );
+        return;
+      }
 
-    $$('.delete-template').forEach((btn) =
-      btn.addEventListener('click', async () => {
+      if (deleteBtn) {
+        const id = deleteBtn.dataset.id;
         if (!confirm('Delete this template?')) return;
-        await Storage.deleteTemplate(btn.dataset.id);
+        await Storage.deleteTemplate(id);
         await Promise.all([renderTemplatesSelect(), renderTemplatesList()]);
         showToast('Template deleted', 'success');
-      })
-    );
+      }
+    });
   }
 
   // ---------------------------------------------------------------------------
