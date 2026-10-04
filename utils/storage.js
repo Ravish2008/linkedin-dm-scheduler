@@ -107,10 +107,56 @@ const Storage = (() => {
       await write('settings', settings);
     },
 
+    // ------------------------------------------------------------------
+    // Campaigns
+    // ------------------------------------------------------------------
+
+    async getCampaigns() {
+      return (await read('campaigns')) || [];
+    },
+
+    async setCampaigns(campaigns) {
+      await write('campaigns', campaigns);
+    },
+
+    async addCampaign(campaign) {
+      const campaigns = await this.getCampaigns();
+      campaigns.push({
+        id: generateId(),
+        createdAt: Date.now(),
+        status: 'draft',
+        ...campaign
+      });
+      await this.setCampaigns(campaigns);
+      return campaigns[campaigns.length - 1];
+    },
+
+    async getCampaign(id) {
+      const campaigns = await this.getCampaigns();
+      return campaigns.find((c) => c.id === id) || null;
+    },
+
+    async updateCampaign(id, updates) {
+      const campaigns = await this.getCampaigns();
+      const index = campaigns.findIndex((c) => c.id === id);
+      if (index === -1) return null;
+      campaigns[index] = { ...campaigns[index], ...updates };
+      await this.setCampaigns(campaigns);
+      return campaigns[index];
+    },
+
+    async deleteCampaign(id) {
+      const campaigns = await this.getCampaigns();
+      const filtered = campaigns.filter((c) => c.id !== id);
+      await this.setCampaigns(filtered);
+      return filtered.length !== campaigns.length;
+    },
+
     async exportData() {
       return {
         messages: await this.getMessages(),
         templates: await this.getTemplates(),
+        campaigns: await this.getCampaigns(),
         settings: await this.getSettings(),
         exportedAt: new Date().toISOString()
       };
@@ -119,6 +165,7 @@ const Storage = (() => {
     async importData(data) {
       if (data.messages) await this.setMessages(data.messages);
       if (data.templates) await this.setTemplates(data.templates);
+      if (data.campaigns) await this.setCampaigns(data.campaigns);
       if (data.settings) await this.setSettings(data.settings);
     }
   };

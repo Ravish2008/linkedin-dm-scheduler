@@ -19,6 +19,7 @@
     <button class="tab-btn active" data-tab="schedule">Schedule</button>
     <button class="tab-btn" data-tab="queue">Queue</button>
     <button class="tab-btn" data-tab="templates">Templates</button>
+    <button class="tab-btn" data-tab="campaign">Campaign</button>
     <button class="tab-btn" data-tab="history">History</button>
     <button class="tab-btn" data-tab="settings">Settings</button>
   </nav>
@@ -87,6 +88,7 @@
           <div class="field">
             <label for="datetime">Date &amp; Time</label>
             <input type="datetime-local" id="datetime" name="datetime" required />
+            <p class="hint" id="datetime-tz-hint"></p>
           </div>
 
           <div class="field">
@@ -146,6 +148,148 @@
       <hr />
       <ul id="templates-list" class="card-list"></ul>
       <p id="templates-empty" class="empty-state">No templates saved yet.</p>
+    </section>
+
+    <!-- Campaign Tab -->
+    <section id="campaign" class="tab-panel">
+      <!-- Campaign builder (hidden while a campaign is selected/running) -->
+      <div id="campaign-builder" class="stack">
+        <div class="field">
+          <label for="campaign-name">Campaign name</label>
+          <input type="text" id="campaign-name" placeholder="e.g., October outreach" />
+        </div>
+
+        <div class="field">
+          <label for="campaign-recipients-input">LinkedIn profile URLs (one per line)</label>
+          <textarea
+            id="campaign-recipients-input"
+            rows="5"
+            placeholder="https://www.linkedin.com/in/jane-doe&#10;https://www.linkedin.com/in/john-smith"
+          ></textarea>
+          <button type="button" id="campaign-add-recipients" class="btn-secondary">
+            Add recipients
+          </button>
+        </div>
+
+        <div class="field">
+          <div class="section-header">
+            <h2 style="font-size:14px">Recipients</h2>
+            <span id="campaign-recipient-count" class="badge">0</span>
+          </div>
+          <ul id="campaign-recipient-preview" class="recipient-preview"></ul>
+          <p id="campaign-recipient-empty" class="empty-state">No recipients added yet.</p>
+        </div>
+
+        <div class="field">
+          <label for="campaign-template-select">Use template (optional)</label>
+          <select id="campaign-template-select">
+            <option value="">-- No template --</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="campaign-message">Message</label>
+          <textarea
+            id="campaign-message"
+            rows="5"
+            placeholder="Hi {firstName}, I noticed you work at {company}..."
+            required
+          ></textarea>
+          <p class="hint">Merge fields: {firstName}, {name}, {company} — filled from each profile.</p>
+        </div>
+
+        <details class="campaign-settings">
+          <summary>Campaign settings</summary>
+          <div class="stack">
+            <div class="field-row">
+              <div class="field">
+                <label for="campaign-daily-cap">Daily cap</label>
+                <input type="number" id="campaign-daily-cap" min="10" max="100" value="25" />
+              </div>
+              <div class="field">
+                <label for="campaign-weekly-cap">Weekly cap</label>
+                <input type="number" id="campaign-weekly-cap" min="50" max="200" value="100" />
+              </div>
+            </div>
+
+            <div class="field-row">
+              <div class="field">
+                <label for="campaign-min-delay">Min delay (min)</label>
+                <input type="number" id="campaign-min-delay" min="1" max="15" value="3" />
+              </div>
+              <div class="field">
+                <label for="campaign-max-delay">Max delay (min)</label>
+                <input type="number" id="campaign-max-delay" min="3" max="30" value="8" />
+              </div>
+            </div>
+
+            <div class="field-row">
+              <div class="field">
+                <label for="campaign-active-start">Active hours start</label>
+                <input type="time" id="campaign-active-start" value="09:00" />
+              </div>
+              <div class="field">
+                <label for="campaign-active-end">Active hours end</label>
+                <input type="time" id="campaign-active-end" value="18:00" />
+              </div>
+            </div>
+
+            <div class="field checkbox">
+              <input type="checkbox" id="campaign-warmup" />
+              <label for="campaign-warmup">Warm-up mode (5/day, ramp to full cap over 5 days)</label>
+            </div>
+
+            <p class="hint" id="campaign-tz-hint"></p>
+          </div>
+        </details>
+
+        <div class="form-actions">
+          <button type="button" id="campaign-create" class="btn-primary">Create campaign</button>
+          <button type="button" id="campaign-clear" class="btn-secondary">Clear</button>
+        </div>
+      </div>
+
+      <!-- Campaign dashboard -->
+      <div id="campaign-dashboard" class="stack hidden">
+        <div class="section-header">
+          <h2 id="campaign-dashboard-name">Campaign</h2>
+          <span id="campaign-dashboard-status" class="status pending">draft</span>
+        </div>
+
+        <div class="progress-wrap">
+          <div class="progress-bar">
+            <div id="campaign-progress-fill" class="progress-fill" style="width: 0%"></div>
+          </div>
+          <p class="hint" id="campaign-progress-text">0 / 0 sent</p>
+        </div>
+
+        <div id="campaign-stats" class="dashboard">
+          <div class="stat"><span id="campaign-stat-sent">0</span><small>Sent</small></div>
+          <div class="stat"><span id="campaign-stat-pending">0</span><small>Pending</small></div>
+          <div class="stat"><span id="campaign-stat-failed">0</span><small>Failed</small></div>
+          <div class="stat"><span id="campaign-stat-skipped">0</span><small>Skipped</small></div>
+        </div>
+
+        <p class="hint" id="campaign-engine-note"></p>
+
+        <div class="form-actions">
+          <button type="button" id="campaign-btn-pause" class="btn-secondary">Pause</button>
+          <button type="button" id="campaign-btn-resume" class="btn-primary hidden">Resume</button>
+          <button type="button" id="campaign-btn-cancel" class="btn-secondary">Cancel</button>
+          <button type="button" id="campaign-btn-delete" class="btn-secondary">Delete</button>
+        </div>
+
+        <hr />
+        <ul id="campaign-recipient-status-list" class="card-list"></ul>
+      </div>
+
+      <!-- Existing campaigns list -->
+      <hr />
+      <div class="section-header">
+        <h2 style="font-size:14px">Saved campaigns</h2>
+      </div>
+      <ul id="campaign-list" class="card-list"></ul>
+      <p id="campaign-list-empty" class="empty-state">No campaigns yet.</p>
     </section>
 
     <!-- History Tab -->
@@ -211,6 +355,7 @@
 
   <script src="../utils/storage.js"></script>
   <script src="../utils/templates.js"></script>
+  <script src="../utils/campaign.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

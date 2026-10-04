@@ -997,6 +997,88 @@
     return Array.from(names);
   }
 
+  /**
+   * Extract profile info for campaign merge fields:
+   * { profileId, fullName, firstName, company }.
+   * Reads the profile page's heading, JSON-LD, and inline data.
+   */
+  function extractProfileInfoFromPage() {
+    const info = {
+      profileId: extractProfileIdFromPage(),
+      fullName: null,
+      firstName: null,
+      company: null
+    };
+
+    // 1. Name from the profile H1.
+    const h1 = document.querySelector('h1');
+    if (h1 && h1.textContent.trim()) {
+      info.fullName = h1.textContent.trim().split('\n')[0].trim();
+    }
+
+    // 2. JSON-LD structured data.
+    for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+      try {
+        const data = JSON.parse(script.textContent);
+        const graph = Array.isArray(data) ? data : data['@graph'] || [data];
+        for (const node of graph) {
+          if (!node) continue;
+          if (!info.fullName && node.name) info.fullName = node.name;
+          if (!info.company) {
+            if (node.worksFor && node.worksFor.name) info.company = node.worksFor.name;
+            else if (node.alumniOf && node.alumniOf.name && !info.company) info.company = node.alumniOf.name;
+          }
+        }
+      } catch {
+        // ignore malformed JSON-LD
+      }
+    }
+
+    // 3. Company from the experience section top card.
+    if (!info.company) {
+      const companySelectors = [
+        '[data-section="currentPositionsDetails"] a',
+        '.pv-top-card--experience-list a',
+        'button[aria-label*="Current company"]',
+        '.inline-show-more-text--is-collapsed a'
+      ];
+      for (const sel of companySelectors) {
+        const el = document.querySelector(sel);
+        if (el && el.textContent.trim()) {
+          info.company = el.textContent.trim().split('\n')[0].trim();
+          break;
+        }
+      }
+    }
+
+    // 4. Fallback: full name from document title (usually "Name | LinkedIn").
+    if (!info.fullName) {
+      const title = document.title || '';
+      const name = title.split('|')[0].trim();
+      if (name && !/linkedin/i.test(name)) info.fullName = name;
+    }
+
+    // 5. Inline page data for company name (worksFor / companyName).
+    if (!info.company) {
+      const html = document.documentElement.innerHTML || '';
+      const m = html.match(/"companyName"\s*:\s*"([^"]+)"/) ||
+                html.match(/"worksFor"\s*:\s*\{[^}]*"name"\s*:\s*"([^"]+)"/);
+      if (m) {
+        try {
+          info.company = decodeURIComponent(m[1]);
+        } catch {
+          info.company = m[1];
+        }
+      }
+    }
+
+    if (info.fullName) {
+      info.firstName = info.fullName.split(/\s+/)[0];
+    }
+
+    return info;
+  }
+
   // Listen for commands from the popup / background service worker.
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'sendLinkedInMessage') {
@@ -1052,6 +1134,17 @@
         } else {
           sendResponse({ success: false, error: 'Profile ID not found on page' });
         }
+      } catch (err) {
+        sendResponse({ success: false, error: String(err && err.message || err) });
+      }
+      return false;
+    }
+
+    if (request.action === 'extractProfileInfo') {
+      console.log('[LDMS] extractProfileInfo on tab', window.location.href);
+      try {
+        const info = extractProfileInfoFromPage();
+        sendResponse({ success: true, ...info });
       } catch (err) {
         sendResponse({ success: false, error: String(err && err.message || err) });
       }

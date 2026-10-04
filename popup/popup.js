@@ -5,9 +5,14 @@
 (function () {
   'use strict';
 
-  const TABS = ['schedule', 'queue', 'templates', 'history', 'settings'];
+  const TABS = ['schedule', 'queue', 'templates', 'campaign', 'history', 'settings'];
   let currentSettings = {};
   let allMessages = [];
+  // Campaign builder working state (recipients staged in the UI before save).
+  let stagedRecipients = [];
+  // Currently selected campaign shown in the dashboard.
+  let activeCampaignId = null;
+  let campaignPollTimer = null;
 
   // ---------------------------------------------------------------------------
   // Utility helpers
@@ -225,6 +230,30 @@
     // Template list actions (delegated because items are recreated on render)
     initTemplatesEventDelegation();
 
+    // Campaign builder + dashboard
+    $('#campaign-add-recipients').addEventListener('click', onAddCampaignRecipients);
+    $('#campaign-create').addEventListener('click', onCreateCampaign);
+    $('#campaign-clear').addEventListener('click', clearCampaignBuilder);
+    $('#campaign-template-select').addEventListener('change', onCampaignTemplateSelect);
+    $('#campaign-btn-pause').addEventListener('click', () => onCampaignControl('pause'));
+    $('#campaign-btn-resume').addEventListener('click', () => onCampaignControl('resume'));
+    $('#campaign-btn-cancel').addEventListener('click', () => onCampaignControl('cancel'));
+    $('#campaign-btn-delete').addEventListener('click', onDeleteCampaign);
+    initCampaignEventDelegation();
+
+    // Keep the campaign dashboard in sync with background progress.
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === 'local' && changes.campaigns && activeCampaignId) {
+        renderCampaignDashboard();
+        renderCampaignList();
+      }
+    });
+
+    // Show the browser's local timezone next to the datetime picker.
+    $('#datetime-tz-hint').textContent = `Browser timezone: ${currentSettings.timezone}`;
+    $('#campaign-tz-hint').textContent =
+      `Active hours use the browser's local timezone (${currentSettings.timezone}).`;
+
     populateTimezoneSelect($('#timezone'), currentSettings.timezone);
     populateTimezoneSelect($('#default-timezone'), currentSettings.timezone);
 
@@ -238,7 +267,9 @@
       renderTemplatesSelect(),
       renderQueue(),
       renderHistory(),
-      renderTemplatesList()
+      renderTemplatesList(),
+      renderCampaignTemplatesSelect(),
+      renderCampaignList()
     ]);
   }
 
@@ -259,6 +290,12 @@
     if (tabId === 'queue') renderQueue();
     if (tabId === 'history') renderHistory();
     if (tabId === 'templates') renderTemplatesList();
+    if (tabId === 'campaign') {
+      renderCampaignTemplatesSelect();
+      renderCampaignRecipientPreview();
+      renderCampaignList();
+      renderCampaignDashboard();
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -618,6 +655,320 @@
 
     $('#cancel-edit').classList.remove('hidden');
     updatePlaceholderFields();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Campaign
+  // ---------------------------------------------------------------------------
+
+  async function renderCampaignTemplatesSelect() {
+    const select = $('#campaign-template-select');
+    const currentValue = select.value;
+    select.innerHTML = '<option value="">-- No template --</option>';
+    const templates = await Storage.getTemplates();
+    for (const t of templates) {
+      const option = document.createElement('option');
+      option.value = t.id;
+      option.textContent = t.name;
+      select.appendChild(option);
+    }
+    select.value = currentValue;
+  }
+
+  async function onCampaignTemplateSelect() {
+    const selected = $('#campaign-template-select option:checked');
+    if (!selected || !selected.value) return;
+    const templates = await Storage.getTemplates();
+    const template = templates.find((t) => t.id === selected.value);
+    if (template) $('#campaign-message').value = template.body;
+  }
+
+  function onAddCampaignRecipients() {
+    const input = $('#campaign-recipients-input');
+    const parsed = Campaign.parseRecipientUrls(input.value);
+    if (parsed.length === 0) {
+      showToast('No valid LinkedIn profile URLs found. Use linkedin.com/in/username per line.', 'error');
+      return;
+    }
+    const existing = new Set(stagedRecipients.map((r) => r.slug));
+    let added = 0;
+    for (const r of parsed) {
+      if (existing.has(r.slug)) continue;
+      existing.add(r.slug);
+      stagedRecipients.push({ ...r, id: Storage.generateId() });
+      added++;
+    }
+    input.value = '';
+    renderCampaignRecipientPreview();
+    showToast(`Added ${added} recipient${added === 1 ? '' : 's'}`, added ? 'success' : 'info');
+  }
+
+  function renderCampaignRecipientPreview() {
+    const list = $('#campaign-recipient-preview');
+    list.innerHTML = '';
+    $('#campaign-recipient-count').textContent = stagedRecipients.length;
+    $('#campaign-recipient-empty').classList.toggle('hidden', stagedRecipients.length > 0);
+
+    for (const r of stagedRecipients) {
+      const li = document.createElement('li');
+      li.className = 'recipient-chip';
+      li.innerHTML = `
+        <span class="recipient-chip-slug" title="${escapeHtml(r.profileUrl)}">${escapeHtml(r.slug)}</span>
+        <button type="button" class="recipient-remove" data-id="${r.id}" aria-label="Remove">×</button>
+      `;
+      list.appendChild(li);
+    }
+  }
+
+  function readCampaignSettingsFromForm() {
+    const clamp = (el, min, max, fallback) => {
+      let v = parseInt(el.value, 10);
+      if (isNaN(v)) v = fallback;
+      return Math.max(min, Math.min(max, v));
+    };
+    return {
+      dailyCap: clamp($('#campaign-daily-cap'), 10, 100, 25),
+      weeklyCap: clamp($('#campaign-weekly-cap'), 50, 200, 100),
+      minDelayMin: clamp($('#campaign-min-delay'), 1, 15, 3),
+      maxDelayMin: clamp($('#campaign-max-delay'), 3, 30, 8),
+      activeStart: $('#campaign-active-start').value || '09:00',
+      activeEnd: $('#campaign-active-end').value || '18:00',
+      warmup: $('#campaign-warmup').checked
+    };
+  }
+
+  async function onCreateCampaign() {
+    const name = $('#campaign-name').value.trim() || `Campaign ${new Date().toLocaleDateString()}`;
+    const message = $('#campaign-message').value.trim();
+
+    if (stagedRecipients.length === 0) {
+      showToast('Add at least one recipient profile URL.', 'error');
+      return;
+    }
+    if (!message) {
+      showToast('Write a message or pick a template.', 'error');
+      return;
+    }
+
+    const settings = readCampaignSettingsFromForm();
+    if (settings.minDelayMin >= settings.maxDelayMin) {
+      showToast('Min delay must be less than max delay.', 'error');
+      return;
+    }
+
+    const recipients = stagedRecipients.map((r) => ({
+      id: r.id,
+      profileUrl: r.profileUrl,
+      slug: r.slug,
+      name: r.slug,
+      status: 'pending',
+      profileId: null,
+      error: null,
+      sentAt: null
+    }));
+
+    const campaign = await Storage.addCampaign({
+      name,
+      message,
+      recipients,
+      settings,
+      status: 'draft',
+      sentToday: 0,
+      sentThisWeek: 0,
+      sessionCount: 0,
+      dayKey: null,
+      weekKey: null,
+      nextSendAt: null,
+      cooldownUntil: null,
+      nextBreakAt: Campaign.randInt(8, 12),
+      warmupStartAt: null,
+      lastError: null
+    });
+
+    clearCampaignBuilder();
+    activeCampaignId = campaign.id;
+    await Promise.all([renderCampaignList(), renderCampaignDashboard()]);
+
+    // Auto-start the campaign immediately.
+    const result = await chrome.runtime.sendMessage({
+      action: 'campaignControl',
+      command: 'start',
+      campaignId: campaign.id
+    });
+    if (result && result.success) {
+      showToast(`Campaign started with ${recipients.length} recipients`, 'success');
+    } else {
+      showToast('Campaign created but failed to start: ' + (result && result.error), 'error');
+    }
+    await renderCampaignDashboard();
+  }
+
+  function clearCampaignBuilder() {
+    stagedRecipients = [];
+    $('#campaign-name').value = '';
+    $('#campaign-recipients-input').value = '';
+    $('#campaign-message').value = '';
+    $('#campaign-template-select').value = '';
+    $('#campaign-warmup').checked = false;
+    $('#campaign-daily-cap').value = 25;
+    $('#campaign-weekly-cap').value = 100;
+    $('#campaign-min-delay').value = 3;
+    $('#campaign-max-delay').value = 8;
+    $('#campaign-active-start').value = '09:00';
+    $('#campaign-active-end').value = '18:00';
+    renderCampaignRecipientPreview();
+  }
+
+  async function renderCampaignList() {
+    const campaigns = await Storage.getCampaigns();
+    const list = $('#campaign-list');
+    list.innerHTML = '';
+    $('#campaign-list-empty').classList.toggle('hidden', campaigns.length > 0);
+
+    const sorted = campaigns.slice().sort((a, b) => b.createdAt - a.createdAt);
+    for (const c of sorted) {
+      const total = (c.recipients || []).length;
+      const sent = (c.recipients || []).filter((r) => r.status === 'sent').length;
+      const li = document.createElement('li');
+      li.className = 'card campaign-card' + (c.id === activeCampaignId ? ' selected' : '');
+      li.dataset.id = c.id;
+      li.innerHTML = `
+        <div class="card-header">
+          <p class="card-title">${escapeHtml(c.name)}</p>
+          <span class="status ${c.status}">${c.status}</span>
+        </div>
+        <p class="card-meta">${sent} / ${total} sent · ${formatDateTime(c.createdAt, currentSettings.timezone)}</p>
+      `;
+      list.appendChild(li);
+    }
+  }
+
+  async function renderCampaignDashboard() {
+    const dashboard = $('#campaign-dashboard');
+    if (!activeCampaignId) {
+      dashboard.classList.add('hidden');
+      return;
+    }
+    const campaign = await Storage.getCampaign(activeCampaignId);
+    if (!campaign) {
+      activeCampaignId = null;
+      dashboard.classList.add('hidden');
+      return;
+    }
+
+    dashboard.classList.remove('hidden');
+    $('#campaign-dashboard-name').textContent = campaign.name;
+    const statusEl = $('#campaign-dashboard-status');
+    statusEl.textContent = campaign.status;
+    statusEl.className = `status ${campaign.status}`;
+
+    const recipients = campaign.recipients || [];
+    const total = recipients.length;
+    const sent = recipients.filter((r) => r.status === 'sent').length;
+    const pending = recipients.filter((r) => r.status === 'pending' || r.status === 'sending').length;
+    const failed = recipients.filter((r) => r.status === 'failed').length;
+    const skipped = recipients.filter((r) => r.status === 'skipped').length;
+
+    const pct = total ? Math.round(((sent + failed + skipped) / total) * 100) : 0;
+    $('#campaign-progress-fill').style.width = pct + '%';
+    $('#campaign-progress-text').textContent = `${sent} / ${total} sent (${pct}% done)`;
+    $('#campaign-stat-sent').textContent = sent;
+    $('#campaign-stat-pending').textContent = pending;
+    $('#campaign-stat-failed').textContent = failed;
+    $('#campaign-stat-skipped').textContent = skipped;
+
+    // Engine status note.
+    const noteEl = $('#campaign-engine-note');
+    if (campaign.status === 'running') {
+      const gate = Campaign.canSendNow(campaign, Date.now());
+      noteEl.textContent = gate.ok
+        ? 'Engine active — sending next recipient shortly.'
+        : `Engine waiting: ${gate.reason.replace(/-/g, ' ')}.`;
+    } else {
+      noteEl.textContent = '';
+    }
+
+    // Controls visibility.
+    const isRunning = campaign.status === 'running';
+    const isPaused = campaign.status === 'paused';
+    const isDraft = campaign.status === 'draft';
+    $('#campaign-btn-pause').classList.toggle('hidden', !isRunning);
+    $('#campaign-btn-resume').classList.toggle('hidden', !(isPaused || isDraft));
+    $('#campaign-btn-resume').textContent = isDraft ? 'Start' : 'Resume';
+    $('#campaign-btn-cancel').classList.toggle('hidden',
+      !(isRunning || isPaused || isDraft));
+    $('#campaign-btn-delete').classList.toggle('hidden',
+      isRunning);
+
+    // Per-recipient status list.
+    const statusList = $('#campaign-recipient-status-list');
+    statusList.innerHTML = '';
+    for (const r of recipients) {
+      const li = document.createElement('li');
+      li.className = 'card recipient-status-card';
+      li.innerHTML = `
+        <div class="card-header">
+          <p class="card-title">${escapeHtml(r.name || r.slug)}</p>
+          <span class="status ${r.status}">${r.status}</span>
+        </div>
+        <p class="card-meta">${escapeHtml(r.slug)}${r.company ? ' · ' + escapeHtml(r.company) : ''}</p>
+        ${r.error ? `<p class="card-meta" style="color:var(--danger)">${escapeHtml(r.error)}</p>` : ''}
+        ${r.sentAt ? `<p class="card-meta">Sent ${formatDateTime(r.sentAt, currentSettings.timezone)}</p>` : ''}
+      `;
+      statusList.appendChild(li);
+    }
+  }
+
+  async function onCampaignControl(command) {
+    if (!activeCampaignId) return;
+    if (command === 'cancel' && !confirm('Cancel this campaign? Pending recipients will be skipped.')) return;
+    try {
+      const result = await chrome.runtime.sendMessage({
+        action: 'campaignControl',
+        command,
+        campaignId: activeCampaignId
+      });
+      if (result && result.success) {
+        showToast(`Campaign ${command}${command === 'pause' ? 'd' : command === 'cancel' ? 'led' : 'ed'}`, 'success');
+      } else {
+        showToast(`Failed to ${command}: ` + (result && result.error), 'error');
+      }
+    } catch (err) {
+      showToast(`Failed to ${command}: ` + err.message, 'error');
+    }
+    await Promise.all([renderCampaignDashboard(), renderCampaignList()]);
+  }
+
+  async function onDeleteCampaign() {
+    if (!activeCampaignId) return;
+    if (!confirm('Delete this campaign? This cannot be undone.')) return;
+    await Storage.deleteCampaign(activeCampaignId);
+    activeCampaignId = null;
+    $('#campaign-dashboard').classList.add('hidden');
+    await renderCampaignList();
+    showToast('Campaign deleted', 'success');
+  }
+
+  /**
+   * Event delegation for campaign UI: recipient chips, campaign list selection.
+   */
+  function initCampaignEventDelegation() {
+    // Remove staged recipients from the builder preview.
+    $('#campaign-recipient-preview').addEventListener('click', (e) => {
+      const removeBtn = e.target.closest('.recipient-remove');
+      if (!removeBtn) return;
+      stagedRecipients = stagedRecipients.filter((r) => r.id !== removeBtn.dataset.id);
+      renderCampaignRecipientPreview();
+    });
+
+    // Select a saved campaign to view its dashboard.
+    $('#campaign-list').addEventListener('click', (e) => {
+      const card = e.target.closest('.campaign-card');
+      if (!card) return;
+      activeCampaignId = card.dataset.id;
+      renderCampaignDashboard();
+      renderCampaignList();
+    });
   }
 
   // ---------------------------------------------------------------------------
