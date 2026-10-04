@@ -13,6 +13,162 @@
   // Currently selected campaign shown in the dashboard.
   let activeCampaignId = null;
   let campaignPollTimer = null;
+  // Last active tab (persisted so the popup reopens where the user left off).
+  let currentTab = 'schedule';
+
+  // ---------------------------------------------------------------------------
+  // Form state persistence
+  //
+  // Chrome destroys the popup (and all DOM state) whenever it loses focus.
+  // To keep user input across reopenings, every field is saved to
+  // chrome.storage.local (debounced on input) and restored in init().
+  // ---------------------------------------------------------------------------
+
+  const FORM_STATE_KEY = 'popupFormState';
+  const FORM_STATE_DEBOUNCE_MS = 250;
+
+  // User-facing fields worth persisting, across all tabs. The file input
+  // (#import-data) is excluded: file values cannot be restored.
+  const PERSISTED_FIELD_IDS = [
+    // Schedule tab
+    'edit-id',
+    'template-select',
+    'recipient',
+    'profile-url',
+    'message',
+    'datetime',
+    'timezone',
+    'recurrence',
+    // Templates tab
+    'template-edit-id',
+    'template-name',
+    'template-body',
+    // Campaign tab
+    'campaign-name',
+    'campaign-recipients-input',
+    'campaign-template-select',
+    'campaign-message',
+    'campaign-daily-cap',
+    'campaign-weekly-cap',
+    'campaign-min-delay',
+    'campaign-max-delay',
+    'campaign-active-start',
+    'campaign-active-end',
+    'campaign-warmup',
+    // History / Settings tabs
+    'history-filter',
+    'default-timezone',
+    'enable-notifications',
+    'dark-mode'
+  ];
+
+  let formStateSaveTimer = null;
+
+  function collectFormState() {
+    const fields = {};
+    for (const id of PERSISTED_FIELD_IDS) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      fields[id] = el.type === 'checkbox' ? el.checked : el.value;
+    }
+
+    // Dynamic template placeholder inputs (placeholder-{key}) in the
+    // Schedule form, keyed by their data-placeholder attribute.
+    const placeholders = {};
+    document.querySelectorAll('#placeholder-fields input[data-placeholder]').forEach((el) => {
+      placeholders[el.dataset.placeholder] = el.value;
+    });
+
+    return {
+      fields,
+      placeholders,
+      stagedRecipients,
+      activeCampaignId,
+      activeTab: currentTab,
+      savedAt: Date.now()
+    };
+  }
+
+  async function saveFormStateNow() {
+    try {
+      await chrome.storage.local.set({ [FORM_STATE_KEY]: collectFormState() });
+    } catch (err) {
+      console.warn('[Popup] Could not save form state:', err.message);
+    }
+  }
+
+  function scheduleFormStateSave() {
+    clearTimeout(formStateSaveTimer);
+    formStateSaveTimer = setTimeout(saveFormStateNow, FORM_STATE_DEBOUNCE_MS);
+  }
+
+  /**
+   * Restore persisted form state into the re-created popup DOM.
+   * Must run after init() has populated selects and set defaults.
+   */
+  async function restoreFormState() {
+    let state = null;
+    try {
+      const data = await chrome.storage.local.get(FORM_STATE_KEY);
+      state = data && data[FORM_STATE_KEY];
+    } catch (err) {
+      console.warn('[Popup] Could not read form state:', err.message);
+      return;
+    }
+    if (!state || !state.fields) return;
+
+    // 1. Static fields.
+    for (const id of PERSISTED_FIELD_IDS) {
+      if (!(id in state.fields)) continue;
+      const el = document.getElementById(id);
+      if (!el) continue;
+      if (el.type === 'checkbox') el.checked = !!state.fields[id];
+      else el.value = state.fields[id];
+    }
+
+    // 2. A stale datetime from a previous session is a scheduling trap —
+    //    keep the fresh default if the saved one is already in the past.
+    const datetimeEl = $('#datetime');
+    if (datetimeEl.value && new Date(datetimeEl.value).getTime() <= Date.now()) {
+      setDefaultDatetimeInput();
+    }
+
+    // 3. Rebuild dynamic placeholder inputs from the restored message, then
+    //    re-apply their saved values.
+    updatePlaceholderFields();
+    const savedPlaceholders = state.placeholders || {};
+    document.querySelectorAll('#placeholder-fields input[data-placeholder]').forEach((el) => {
+      if (el.dataset.placeholder in savedPlaceholders) {
+        el.value = savedPlaceholders[el.dataset.placeholder];
+      }
+    });
+
+    // 4. Edit-mode affordances depend on restored hidden edit IDs.
+    $('#cancel-edit').classList.toggle('hidden', !$('#edit-id').value);
+    $('#cancel-template-edit').classList.toggle('hidden', !$('#template-edit-id').value);
+
+    // 5. Campaign builder staging.
+    if (Array.isArray(state.stagedRecipients)) {
+      stagedRecipients = state.stagedRecipients.filter((r) => r && r.id && r.slug);
+    }
+    renderCampaignRecipientPreview();
+
+    // 6. Campaign dashboard selection (only if the campaign still exists).
+    if (state.activeCampaignId) {
+      const campaign = await Storage.getCampaign(state.activeCampaignId);
+      if (campaign) {
+        activeCampaignId = state.activeCampaignId;
+        renderCampaignDashboard();
+      }
+    }
+
+    // 7. Views that read field values need a re-render post-restore.
+    renderHistory();
+
+    // 8. Return the user to the tab they were on.
+    const tab = TABS.includes(state.activeTab) ? state.activeTab : 'schedule';
+    switchTab(tab);
+  }
 
   // ---------------------------------------------------------------------------
   // Utility helpers
@@ -249,6 +405,13 @@
       }
     });
 
+    // Form state persistence: capture every user edit (debounced), including
+    // dynamically created fields, via delegated listeners on document.
+    document.addEventListener('input', scheduleFormStateSave);
+    document.addEventListener('change', scheduleFormStateSave);
+    // Best-effort flush when the popup is torn down.
+    window.addEventListener('pagehide', saveFormStateNow);
+
     // Show the browser's local timezone next to the datetime picker.
     $('#datetime-tz-hint').textContent = `Browser timezone: ${currentSettings.timezone}`;
     $('#campaign-tz-hint').textContent =
@@ -271,6 +434,10 @@
       renderCampaignTemplatesSelect(),
       renderCampaignList()
     ]);
+
+    // Restore the user's in-progress form state and last active tab. Must run
+    // after selects are populated and defaults are set so restored values win.
+    await restoreFormState();
   }
 
   // ---------------------------------------------------------------------------
@@ -284,6 +451,7 @@
   }
 
   function switchTab(tabId) {
+    currentTab = tabId;
     $$('.tab-btn').forEach((btn) => btn.classList.toggle('active', btn.dataset.tab === tabId));
     $$('.tab-panel').forEach((panel) => panel.classList.toggle('active', panel.id === tabId));
 
@@ -296,6 +464,10 @@
       renderCampaignList();
       renderCampaignDashboard();
     }
+
+    // Persist immediately so the popup reopens on this tab. This also captures
+    // programmatic form changes made just before a switchTab (e.g. edit flows).
+    saveFormStateNow();
   }
 
   // ---------------------------------------------------------------------------
@@ -441,6 +613,8 @@
     $('#template-form').reset();
     $('#template-edit-id').value = '';
     $('#cancel-template-edit').classList.add('hidden');
+    // Programmatic clears don't fire input events; persist explicitly.
+    saveFormStateNow();
   }
 
   async function renderTemplatesList() {
@@ -572,6 +746,8 @@
     $('#placeholder-fields').innerHTML = '';
     populateTimezoneSelect($('#timezone'), currentSettings.timezone);
     setDefaultDatetimeInput();
+    // Programmatic clears don't fire input events; persist explicitly.
+    saveFormStateNow();
   }
 
   async function renderQueue() {
@@ -700,6 +876,8 @@
     }
     input.value = '';
     renderCampaignRecipientPreview();
+    // stagedRecipients changed programmatically; persist explicitly.
+    saveFormStateNow();
     showToast(`Added ${added} recipient${added === 1 ? '' : 's'}`, added ? 'success' : 'info');
   }
 
@@ -801,6 +979,8 @@
       showToast('Campaign created but failed to start: ' + (result && result.error), 'error');
     }
     await renderCampaignDashboard();
+    // The dashboard selection changed after the builder was cleared; persist.
+    saveFormStateNow();
   }
 
   function clearCampaignBuilder() {
@@ -817,6 +997,8 @@
     $('#campaign-active-start').value = '09:00';
     $('#campaign-active-end').value = '18:00';
     renderCampaignRecipientPreview();
+    // Programmatic clears don't fire input events; persist explicitly.
+    saveFormStateNow();
   }
 
   async function renderCampaignList() {
@@ -946,6 +1128,8 @@
     activeCampaignId = null;
     $('#campaign-dashboard').classList.add('hidden');
     await renderCampaignList();
+    // Selection cleared; persist so the popup doesn't restore a deleted campaign.
+    saveFormStateNow();
     showToast('Campaign deleted', 'success');
   }
 
@@ -959,6 +1143,8 @@
       if (!removeBtn) return;
       stagedRecipients = stagedRecipients.filter((r) => r.id !== removeBtn.dataset.id);
       renderCampaignRecipientPreview();
+      // stagedRecipients changed programmatically; persist.
+      saveFormStateNow();
     });
 
     // Select a saved campaign to view its dashboard.
@@ -968,6 +1154,8 @@
       activeCampaignId = card.dataset.id;
       renderCampaignDashboard();
       renderCampaignList();
+      // Selection changed programmatically; persist.
+      saveFormStateNow();
     });
   }
 
