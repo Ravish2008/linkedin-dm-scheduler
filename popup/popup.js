@@ -12,6 +12,8 @@
   let stagedRecipients = [];
   // Currently selected campaign shown in the dashboard.
   let activeCampaignId = null;
+  // Campaign being edited in the builder (null when composing a new campaign).
+  let editingCampaignId = null;
   let campaignPollTimer = null;
   // Last active tab (persisted so the popup reopens where the user left off).
   let currentTab = 'schedule';
@@ -84,6 +86,7 @@
       placeholders,
       stagedRecipients,
       activeCampaignId,
+      editingCampaignId,
       activeTab: currentTab,
       savedAt: Date.now()
     };
@@ -152,6 +155,17 @@
       stagedRecipients = state.stagedRecipients.filter((r) => r && r.id && r.slug);
     }
     renderCampaignRecipientPreview();
+
+    // 5b. Campaign edit mode: fields and staged recipients were restored
+    // above; re-apply the edit affordances if the campaign is still
+    // editable (draft/paused).
+    if (state.editingCampaignId) {
+      const campaign = await Storage.getCampaign(state.editingCampaignId);
+      if (campaign && (campaign.status === 'draft' || campaign.status === 'paused')) {
+        editingCampaignId = state.editingCampaignId;
+      }
+    }
+    applyCampaignEditModeUI(!!editingCampaignId);
 
     // 6. Campaign dashboard selection (only if the campaign still exists).
     if (state.activeCampaignId) {
@@ -390,6 +404,10 @@
     $('#campaign-add-recipients').addEventListener('click', onAddCampaignRecipients);
     $('#campaign-create').addEventListener('click', onCreateCampaign);
     $('#campaign-clear').addEventListener('click', clearCampaignBuilder);
+    $('#cancel-campaign-edit').addEventListener('click', () => {
+      clearCampaignBuilder();
+      showToast('Campaign edit cancelled', 'info');
+    });
     $('#campaign-template-select').addEventListener('change', onCampaignTemplateSelect);
     $('#campaign-btn-pause').addEventListener('click', () => onCampaignControl('pause'));
     $('#campaign-btn-resume').addEventListener('click', () => onCampaignControl('resume'));
@@ -915,24 +933,157 @@
     };
   }
 
-  async function onCreateCampaign() {
+  /**
+   * Toggle builder affordances between create and edit mode.
+   */
+  function applyCampaignEditModeUI(isEditing) {
+    $('#campaign-create').textContent = isEditing ? 'Save changes' : 'Create campaign';
+    $('#cancel-campaign-edit').classList.toggle('hidden', !isEditing);
+  }
+
+  /**
+   * Read + validate the campaign builder form. Returns { name, message,
+   * settings } or null (with a toast) when invalid. Shared by create and
+   * edit-save flows.
+   */
+  function validateCampaignForm() {
     const name = $('#campaign-name').value.trim() || `Campaign ${new Date().toLocaleDateString()}`;
     const message = $('#campaign-message').value.trim();
 
     if (stagedRecipients.length === 0) {
       showToast('Add at least one recipient profile URL.', 'error');
-      return;
+      return null;
     }
     if (!message) {
       showToast('Write a message or pick a template.', 'error');
-      return;
+      return null;
     }
 
     const settings = readCampaignSettingsFromForm();
     if (settings.minDelayMin >= settings.maxDelayMin) {
       showToast('Min delay must be less than max delay.', 'error');
+      return null;
+    }
+    return { name, message, settings };
+  }
+
+  /**
+   * Load a draft/paused campaign back into the builder for editing.
+   * Sent/skipped recipients are not re-staged (they are preserved on save).
+   */
+  async function startEditCampaign(campaignId) {
+    const campaign = await Storage.getCampaign(campaignId);
+    if (!campaign) return;
+    if (campaign.status !== 'draft' && campaign.status !== 'paused') {
+      showToast('Only draft or paused campaigns can be edited.', 'error');
       return;
     }
+
+    editingCampaignId = campaign.id;
+
+    // Name, message and all settings.
+    $('#campaign-name').value = campaign.name || '';
+    $('#campaign-message').value = campaign.message || '';
+    $('#campaign-recipients-input').value = '';
+    const s = campaign.settings || {};
+    $('#campaign-daily-cap').value = s.dailyCap || 25;
+    $('#campaign-weekly-cap').value = s.weeklyCap || 100;
+    $('#campaign-min-delay').value = s.minDelayMin || 3;
+    $('#campaign-max-delay').value = s.maxDelayMin || 8;
+    $('#campaign-active-start').value = s.activeStart || '09:00';
+    $('#campaign-active-end').value = s.activeEnd || '18:00';
+    $('#campaign-warmup').checked = !!s.warmup;
+
+    // Preselect the template if the campaign message matches one exactly.
+    await renderCampaignTemplatesSelect();
+    const templates = await Storage.getTemplates();
+    const match = templates.find((t) => t.body === campaign.message);
+    $('#campaign-template-select').value = match ? match.id : '';
+
+    // Re-stage unfinished recipients; keep resolved profile IDs for reuse.
+    stagedRecipients = (campaign.recipients || [])
+      .filter((r) => r.status === 'pending' || r.status === 'failed' || r.status === 'sending')
+      .map((r) => ({
+        id: r.id,
+        profileUrl: r.profileUrl,
+        slug: r.slug,
+        name: r.slug,
+        profileId: r.profileId || null
+      }));
+    renderCampaignRecipientPreview();
+
+    applyCampaignEditModeUI(true);
+    $('#campaign-builder').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // Builder was populated programmatically; persist explicitly.
+    saveFormStateNow();
+    showToast(`Editing "${campaign.name}" — already-sent recipients are kept.`, 'info');
+  }
+
+  /**
+   * Save builder changes back into the campaign being edited. Completed
+   * (sent/skipped) recipients and all engine counters are preserved.
+   */
+  async function saveCampaignEdit() {
+    const existing = await Storage.getCampaign(editingCampaignId);
+    if (!existing) {
+      showToast('This campaign no longer exists.', 'error');
+      clearCampaignBuilder();
+      return;
+    }
+    if (existing.status !== 'draft' && existing.status !== 'paused') {
+      showToast('Campaign is running — pause it before saving edits.', 'error');
+      return;
+    }
+
+    const input = validateCampaignForm();
+    if (!input) return;
+
+    // Completed recipients stay untouched; staged ones are re-added as pending.
+    const completed = (existing.recipients || []).filter(
+      (r) => r.status === 'sent' || r.status === 'skipped'
+    );
+    const bySlug = new Map((existing.recipients || []).map((r) => [r.slug, r]));
+    const recipients = completed.concat(
+      stagedRecipients.map((r) => {
+        const prev = bySlug.get(r.slug);
+        return {
+          id: r.id,
+          profileUrl: r.profileUrl,
+          slug: r.slug,
+          name: r.slug,
+          status: 'pending',
+          profileId: r.profileId || (prev && prev.profileId) || null,
+          error: null,
+          sentAt: null
+        };
+      })
+    );
+
+    await Storage.updateCampaign(existing.id, {
+      name: input.name,
+      message: input.message,
+      recipients,
+      settings: input.settings
+    });
+
+    activeCampaignId = existing.id;
+    clearCampaignBuilder();
+    await Promise.all([renderCampaignList(), renderCampaignDashboard()]);
+    // Selection + edit state changed after the builder was cleared; persist.
+    saveFormStateNow();
+    showToast('Campaign updated', 'success');
+  }
+
+  async function onCreateCampaign() {
+    // Edit mode: save changes into the existing campaign instead of
+    // creating a new one (no auto-start; status stays draft/paused).
+    if (editingCampaignId) {
+      await saveCampaignEdit();
+      return;
+    }
+
+    const input = validateCampaignForm();
+    if (!input) return;
 
     const recipients = stagedRecipients.map((r) => ({
       id: r.id,
@@ -946,10 +1097,10 @@
     }));
 
     const campaign = await Storage.addCampaign({
-      name,
-      message,
+      name: input.name,
+      message: input.message,
       recipients,
-      settings,
+      settings: input.settings,
       status: 'draft',
       sentToday: 0,
       sentThisWeek: 0,
@@ -985,6 +1136,7 @@
 
   function clearCampaignBuilder() {
     stagedRecipients = [];
+    editingCampaignId = null;
     $('#campaign-name').value = '';
     $('#campaign-recipients-input').value = '';
     $('#campaign-message').value = '';
@@ -996,6 +1148,7 @@
     $('#campaign-max-delay').value = 8;
     $('#campaign-active-start').value = '09:00';
     $('#campaign-active-end').value = '18:00';
+    applyCampaignEditModeUI(false);
     renderCampaignRecipientPreview();
     // Programmatic clears don't fire input events; persist explicitly.
     saveFormStateNow();
@@ -1011,6 +1164,7 @@
     for (const c of sorted) {
       const total = (c.recipients || []).length;
       const sent = (c.recipients || []).filter((r) => r.status === 'sent').length;
+      const editable = c.status === 'draft' || c.status === 'paused';
       const li = document.createElement('li');
       li.className = 'card campaign-card' + (c.id === activeCampaignId ? ' selected' : '');
       li.dataset.id = c.id;
@@ -1020,6 +1174,10 @@
           <span class="status ${c.status}">${c.status}</span>
         </div>
         <p class="card-meta">${sent} / ${total} sent · ${formatDateTime(c.createdAt, currentSettings.timezone)}</p>
+        ${editable ? `
+        <div class="card-actions">
+          <button type="button" class="btn-secondary edit-campaign" data-id="${c.id}">Edit</button>
+        </div>` : ''}
       `;
       list.appendChild(li);
     }
@@ -1147,8 +1305,14 @@
       saveFormStateNow();
     });
 
-    // Select a saved campaign to view its dashboard.
-    $('#campaign-list').addEventListener('click', (e) => {
+    // Select a saved campaign to view its dashboard, or load one into the
+    // builder for editing (draft/paused only).
+    $('#campaign-list').addEventListener('click', async (e) => {
+      const editBtn = e.target.closest('.edit-campaign');
+      if (editBtn) {
+        await startEditCampaign(editBtn.dataset.id);
+        return;
+      }
       const card = e.target.closest('.campaign-card');
       if (!card) return;
       activeCampaignId = card.dataset.id;
