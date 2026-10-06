@@ -7,7 +7,7 @@ A production-ready Chrome Extension that lets you schedule LinkedIn direct messa
 - **Schedule Messages** — Pick a recipient, message, date, time, and timezone.
 - **Message Queue** — View, edit, or delete pending messages.
 - **Recurring Messages** — Weekly or monthly recurring sends.
-- **Message Templates** — Save reusable templates with `{name}`, `{company}`, and other placeholders.
+- **Message Templates** — Save reusable templates with `{name}`, `{firstName}`, and other placeholders.
 - **Contact Autocomplete** — Refresh your LinkedIn connections list directly from the messaging page.
 - **Send History & Dashboard** — Track sent/failed messages with success-rate stats.
 - **Browser Notifications** — Get notified when a message is sent or fails.
