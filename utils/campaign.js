@@ -225,14 +225,11 @@ const Campaign = (() => {
 
   /**
    * Apply merge fields to a campaign message.
-   * Supported: {firstName}, {name}, {fullName}.
+   * Supported: {name}.
    */
   function applyMergeFields(text, recipient) {
     const fullName = recipient.name || recipient.fullName || '';
-    const firstName = recipient.firstName || fullName.split(/\s+/)[0] || '';
     return String(text || '')
-      .replace(/\{firstName\}/gi, firstName)
-      .replace(/\{fullName\}/gi, fullName)
       .replace(/\{name\}/gi, fullName);
   }
 
