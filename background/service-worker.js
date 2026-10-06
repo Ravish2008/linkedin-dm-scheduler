@@ -187,26 +187,6 @@ async function advanceCampaign(campaignId) {
   const recipient = (campaign.recipients || []).find((r) => r.status === 'pending');
   if (!recipient) return;
 
-  // Skip if already messaged in the last 30 days (check History).
-  const messages = await Storage.getMessages();
-  const thirtyDaysAgo = now - 30 * 24 * 3600000;
-  const recent = messages.find(
-    (m) =>
-      m.status === 'sent' &&
-      m.sentAt &&
-      m.sentAt > thirtyDaysAgo &&
-      recipient.slug &&
-      (m.profileSlug === recipient.slug ||
-        (m.recipient && recipient.name && m.recipient === recipient.name))
-  );
-  if (recent) {
-    await updateCampaignRecipient(campaignId, recipient.id, {
-      status: 'skipped',
-      error: 'Already messaged within 30 days'
-    });
-    return;
-  }
-
   await updateCampaignRecipient(campaignId, recipient.id, { status: 'sending' });
 
   // Resolve profile info (ID + merge fields) from the profile page.
@@ -240,7 +220,7 @@ async function advanceCampaign(campaignId) {
   if (result.success) {
     await updateCampaignRecipient(campaignId, recipient.id, { status: 'sent', sentAt: now, error: null });
 
-    // Log to History so the 30-day skip and dashboard pick it up.
+    // Log to History so the dashboard picks it up.
     await Storage.addMessage({
       recipient: recipient.name || recipient.slug,
       text,
@@ -267,6 +247,18 @@ async function advanceCampaign(campaignId) {
       lastError: null
     };
     await Storage.updateCampaign(campaignId, updates);
+
+    // Delays can now be configured in seconds, but the engine alarm only
+    // fires once a minute. For sub-minute delays, schedule a precise
+    // best-effort follow-up tick; the periodic alarm remains the backstop
+    // if the service worker is suspended before it fires.
+    if (pacing.delayMs < 60000) {
+      setTimeout(() => {
+        campaignEngineTick().catch((err) =>
+          console.error('[Campaign] Follow-up tick failed:', err)
+        );
+      }, pacing.delayMs);
+    }
   } else {
     await updateCampaignRecipient(campaignId, recipient.id, {
       status: 'failed',

@@ -8,8 +8,8 @@
 const Campaign = (() => {
   const DEFAULT_CAMPAIGN_SETTINGS = {
     dailyCap: 25,
-    minDelayMin: 3,
-    maxDelayMin: 8,
+    minDelaySec: 180,
+    maxDelaySec: 480,
     activeStart: '09:00',
     activeEnd: '18:00',
     weeklyCap: 100,
@@ -28,16 +28,31 @@ const Campaign = (() => {
   }
 
   /**
-   * Gaussian-distributed random delay between min and max (minutes), clamped.
+   * Resolve delay settings in seconds. Supports the legacy minDelayMin /
+   * maxDelayMin fields (pre-seconds campaigns) by converting them.
+   */
+  function delaySettings(settings) {
+    const s = settings || DEFAULT_CAMPAIGN_SETTINGS;
+    const minDelaySec = s.minDelaySec != null
+      ? s.minDelaySec
+      : Math.round((s.minDelayMin || 3) * 60);
+    const maxDelaySec = s.maxDelaySec != null
+      ? s.maxDelaySec
+      : Math.round((s.maxDelayMin || 8) * 60);
+    return { minDelaySec, maxDelaySec };
+  }
+
+  /**
+   * Gaussian-distributed random delay between min and max (seconds), clamped.
    * Mean is the midpoint; ~99.7% of samples fall inside the range.
    * Returns milliseconds.
    */
-  function gaussianDelayMs(minMin, maxMin) {
-    const mean = (minMin + maxMin) / 2;
-    const sd = (maxMin - minMin) / 6 || 0.5;
+  function gaussianDelayMs(minSec, maxSec) {
+    const mean = (minSec + maxSec) / 2;
+    const sd = (maxSec - minSec) / 6 || 0.5;
     let sample = mean + randNormal() * sd;
-    sample = Math.max(minMin, Math.min(maxMin, sample));
-    return Math.round(sample * 60000);
+    sample = Math.max(minSec, Math.min(maxSec, sample));
+    return Math.round(sample * 1000);
   }
 
   /**
@@ -175,6 +190,7 @@ const Campaign = (() => {
    */
   function nextDelayAfterSend(campaign) {
     const settings = campaign.settings || DEFAULT_CAMPAIGN_SETTINGS;
+    const delays = delaySettings(settings);
     const sessionCount = (campaign.sessionCount || 0) + 1;
     const breakAt = campaign.nextBreakAt || randInt(8, 12);
 
@@ -189,7 +205,7 @@ const Campaign = (() => {
     }
 
     return {
-      delayMs: gaussianDelayMs(settings.minDelayMin, settings.maxDelayMin),
+      delayMs: gaussianDelayMs(delays.minDelaySec, delays.maxDelaySec),
       takeBreak: false,
       sessionCount,
       nextBreakAt: breakAt
@@ -255,6 +271,7 @@ const Campaign = (() => {
 
   return {
     DEFAULT_CAMPAIGN_SETTINGS,
+    delaySettings,
     gaussianDelayMs,
     randInt,
     dayKey,

@@ -53,7 +53,9 @@
     'campaign-daily-cap',
     'campaign-weekly-cap',
     'campaign-min-delay',
+    'campaign-min-delay-unit',
     'campaign-max-delay',
+    'campaign-max-delay-unit',
     'campaign-active-start',
     'campaign-active-end',
     'campaign-warmup',
@@ -916,17 +918,46 @@
     }
   }
 
+  /**
+   * Write a total-seconds delay into a number + unit input pair, choosing
+   * the unit that displays most cleanly.
+   */
+  function setDelayInputs(valueId, unitId, totalSec) {
+    const input = $('#' + valueId);
+    const unit = $('#' + unitId);
+    if (totalSec == null || isNaN(totalSec)) {
+      input.value = '';
+      unit.value = 'min';
+      return;
+    }
+    if (totalSec % 60 === 0) {
+      input.value = totalSec / 60;
+      unit.value = 'min';
+    } else {
+      input.value = totalSec;
+      unit.value = 'sec';
+    }
+  }
+
   function readCampaignSettingsFromForm() {
     const clamp = (el, min, max, fallback) => {
       let v = parseInt(el.value, 10);
       if (isNaN(v)) v = fallback;
       return Math.max(min, Math.min(max, v));
     };
+    // Delay inputs are a number + unit (seconds or minutes); store seconds.
+    // Allowed: min delay 10 s – 30 min, max delay 30 s – 60 min.
+    const toSeconds = (valueId, unitId, fallbackSec) => {
+      let n = parseFloat($('#' + valueId).value);
+      if (isNaN(n)) return fallbackSec;
+      const unitSec = $('#' + unitId).value === 'min' ? 60 : 1;
+      return Math.round(n * unitSec);
+    };
     return {
       dailyCap: clamp($('#campaign-daily-cap'), 10, 100, 25),
       weeklyCap: clamp($('#campaign-weekly-cap'), 50, 200, 100),
-      minDelayMin: clamp($('#campaign-min-delay'), 1, 15, 3),
-      maxDelayMin: clamp($('#campaign-max-delay'), 3, 30, 8),
+      minDelaySec: Math.max(10, Math.min(1800, toSeconds('campaign-min-delay', 'campaign-min-delay-unit', 180))),
+      maxDelaySec: Math.max(30, Math.min(3600, toSeconds('campaign-max-delay', 'campaign-max-delay-unit', 480))),
       activeStart: $('#campaign-active-start').value || '09:00',
       activeEnd: $('#campaign-active-end').value || '18:00',
       warmup: $('#campaign-warmup').checked
@@ -960,7 +991,7 @@
     }
 
     const settings = readCampaignSettingsFromForm();
-    if (settings.minDelayMin >= settings.maxDelayMin) {
+    if (settings.minDelaySec >= settings.maxDelaySec) {
       showToast('Min delay must be less than max delay.', 'error');
       return null;
     }
@@ -988,8 +1019,9 @@
     const s = campaign.settings || {};
     $('#campaign-daily-cap').value = s.dailyCap || 25;
     $('#campaign-weekly-cap').value = s.weeklyCap || 100;
-    $('#campaign-min-delay').value = s.minDelayMin || 3;
-    $('#campaign-max-delay').value = s.maxDelayMin || 8;
+    const delays = Campaign.delaySettings(s);
+    setDelayInputs('campaign-min-delay', 'campaign-min-delay-unit', delays.minDelaySec);
+    setDelayInputs('campaign-max-delay', 'campaign-max-delay-unit', delays.maxDelaySec);
     $('#campaign-active-start').value = s.activeStart || '09:00';
     $('#campaign-active-end').value = s.activeEnd || '18:00';
     $('#campaign-warmup').checked = !!s.warmup;
@@ -1145,7 +1177,9 @@
     $('#campaign-daily-cap').value = 25;
     $('#campaign-weekly-cap').value = 100;
     $('#campaign-min-delay').value = 3;
+    $('#campaign-min-delay-unit').value = 'min';
     $('#campaign-max-delay').value = 8;
+    $('#campaign-max-delay-unit').value = 'min';
     $('#campaign-active-start').value = '09:00';
     $('#campaign-active-end').value = '18:00';
     applyCampaignEditModeUI(false);
