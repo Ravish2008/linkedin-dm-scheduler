@@ -997,10 +997,155 @@
     return Array.from(names);
   }
 
+  // ---------------------------------------------------------------------------
+  // Company extraction for campaign merge fields.
+  //
+  // LinkedIn profile pages render the experience section LAZILY (only once it
+  // scrolls into view), and the legacy selectors this code used before
+  // (.pv-top-card--experience-list, [data-section="currentPositionsDetails"])
+  // are dead on the modern DOM. The reliable, non-lazy sources are the
+  // top-card headline ("Title at Company") and the <meta name="description">
+  // tag, so those run first.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Normalize a raw company string: strip employment-type suffixes
+   * ("Google · Full-time" -> "Google"), trailing pipes, and reject noise.
+   */
+  function cleanCompanyName(raw) {
+    if (!raw) return null;
+    let s = String(raw).split('\n')[0].replace(/\s+/g, ' ').trim();
+    // "Google · Full-time" -> "Google"
+    s = s.replace(/\s*·\s*(Full-time|Part-time|Contract|Freelance|Internship|Self-employed|Seasonal|Apprenticeship|Temporary|Volunteer)\b.*$/i, '').trim();
+    // "Google | Ex-Meta" -> "Google"
+    s = s.split('|')[0].trim();
+    if (s.length < 2 || s.length > 80) return null;
+    return s;
+  }
+
+  /** Strategy 1: top-card headline, usually "Title at Company". */
+  function companyFromHeadline() {
+    const el = document.querySelector('.text-body-medium.break-words') ||
+      document.querySelector('div.pv-text-details__left-panel .text-body-medium');
+    const headline = el ? el.textContent.replace(/\s+/g, ' ').trim() : '';
+    if (!headline) return null;
+    const m = headline.match(/\s+at\s+(.+)$/i) || headline.match(/\s+@\s+(.+)$/);
+    return m ? cleanCompanyName(m[1]) : null;
+  }
+
+  /** Strategy 2: top-card "current company" link / aria-label. */
+  function companyFromTopCard() {
+    const labelled = document.querySelector('[aria-label*="Current company"]');
+    if (labelled) {
+      const m = (labelled.getAttribute('aria-label') || '').match(/Current company:\s*(.+)/i);
+      if (m && m[1]) return cleanCompanyName(m[1]);
+    }
+    const link = document.querySelector('.pv-text-details__right-panel a[href*="/company/"]') ||
+      document.querySelector('.pv-top-card--experience-list a[href*="/company/"]') ||
+      document.querySelector('[data-section="currentPositionsDetails"] a');
+    if (link) return cleanCompanyName(link.textContent);
+    return null;
+  }
+
+  /**
+   * Strategy 3: experience section first entry (modern DOM). Only present
+   * when the section has been rendered (lazy-load), so this is opportunistic.
+   * Ungrouped entries put "Company · Type" in a .t-14 subtitle; grouped
+   * entries (several roles, one company) use the bold entry title.
+   */
+  function companyFromExperienceSection() {
+    const anchor = document.getElementById('experience');
+    if (!anchor) return null;
+    const section = anchor.closest('section') ||
+      (anchor.nextElementSibling && anchor.nextElementSibling.tagName === 'SECTION'
+        ? anchor.nextElementSibling
+        : (anchor.parentElement ? anchor.parentElement.closest('section') : null));
+    if (!section) return null;
+    const firstLi = section.querySelector('ul > li');
+    if (!firstLi) return null;
+    const grouped = !!firstLi.querySelector('ul');
+    for (const span of firstLi.querySelectorAll('span[aria-hidden="true"]')) {
+      if (span.closest('.t-black--light')) continue; // dates / locations
+      const isBold = !!span.closest('.t-bold');
+      if (grouped ? !isBold : isBold) continue;
+      const candidate = cleanCompanyName(span.textContent);
+      if (!candidate) continue;
+      // Skip date ranges and durations.
+      if (/\b(yrs?|mos?)\b/i.test(candidate) || /\b\d{4}\b/.test(candidate)) continue;
+      return candidate;
+    }
+    return null;
+  }
+
+  /** Strategy 4: JSON-LD structured data (worksFor, incl. array form). */
+  function companyFromJsonLd() {
+    const fromNode = (node) => {
+      if (!node) return null;
+      const worksFor = Array.isArray(node.worksFor) ? node.worksFor[0] : node.worksFor;
+      if (worksFor && worksFor.name) return cleanCompanyName(worksFor.name);
+      return null;
+    };
+    for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+      try {
+        const data = JSON.parse(script.textContent);
+        const graph = Array.isArray(data) ? data : data['@graph'] || [data];
+        for (const node of graph) {
+          // ProfilePage wraps the Person in mainEntity; check both levels.
+          const c = fromNode(node) || fromNode(node && node.mainEntity);
+          if (c) return c;
+        }
+      } catch {
+        // ignore malformed JSON-LD
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Strategy 5: <meta name="description"> — always present in <head>, never
+   * lazy. Public profile format: "Title at Company · Experience: Company ·
+   * Education: School · Location: City · N connections on LinkedIn. ..."
+   */
+  function companyFromMetaDescription() {
+    for (const sel of ['meta[name="description"]', 'meta[property="og:description"]']) {
+      const meta = document.querySelector(sel);
+      const content = meta ? (meta.getAttribute('content') || '') : '';
+      if (!content) continue;
+      const m = content.match(/Experience:\s*([^·]+?)\s*·/) ||
+        content.match(/Experience:\s*([^·|]+?)\s*on LinkedIn/i);
+      if (m) {
+        const c = cleanCompanyName(m[1]);
+        if (c) return c;
+      }
+      const head = content.split('·')[0];
+      if (head) {
+        const m2 = head.match(/\s+at\s+(.+)$/i);
+        if (m2) {
+          const c = cleanCompanyName(m2[1]);
+          if (c) return c;
+        }
+      }
+    }
+    return null;
+  }
+
+  /** Strategy 6: inline page data ("companyName" / worksFor in embedded JSON). */
+  function companyFromInlineData() {
+    const html = document.documentElement.innerHTML || '';
+    const m = html.match(/"companyName"\s*:\s*"([^"]+)"/) ||
+              html.match(/"worksFor"\s*:\s*\{[^}]*"name"\s*:\s*"([^"]+)"/);
+    if (!m) return null;
+    try {
+      return cleanCompanyName(decodeURIComponent(m[1]));
+    } catch {
+      return cleanCompanyName(m[1]);
+    }
+  }
+
   /**
    * Extract profile info for campaign merge fields:
    * { profileId, fullName, firstName, company }.
-   * Reads the profile page's heading, JSON-LD, and inline data.
+   * Reads the profile page's heading, headline, JSON-LD, and inline data.
    */
   function extractProfileInfoFromPage() {
     const info = {
@@ -1016,61 +1161,36 @@
       info.fullName = h1.textContent.trim().split('\n')[0].trim();
     }
 
-    // 2. JSON-LD structured data.
-    for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
-      try {
-        const data = JSON.parse(script.textContent);
-        const graph = Array.isArray(data) ? data : data['@graph'] || [data];
-        for (const node of graph) {
-          if (!node) continue;
-          if (!info.fullName && node.name) info.fullName = node.name;
-          if (!info.company) {
-            if (node.worksFor && node.worksFor.name) info.company = node.worksFor.name;
-            else if (node.alumniOf && node.alumniOf.name && !info.company) info.company = node.alumniOf.name;
+    // 2. Name from JSON-LD if the H1 missed.
+    if (!info.fullName) {
+      for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+        try {
+          const data = JSON.parse(script.textContent);
+          const graph = Array.isArray(data) ? data : data['@graph'] || [data];
+          for (const node of graph) {
+            if (!info.fullName && node && node.name) info.fullName = node.name;
           }
-        }
-      } catch {
-        // ignore malformed JSON-LD
-      }
-    }
-
-    // 3. Company from the experience section top card.
-    if (!info.company) {
-      const companySelectors = [
-        '[data-section="currentPositionsDetails"] a',
-        '.pv-top-card--experience-list a',
-        'button[aria-label*="Current company"]',
-        '.inline-show-more-text--is-collapsed a'
-      ];
-      for (const sel of companySelectors) {
-        const el = document.querySelector(sel);
-        if (el && el.textContent.trim()) {
-          info.company = el.textContent.trim().split('\n')[0].trim();
-          break;
+        } catch {
+          // ignore malformed JSON-LD
         }
       }
     }
 
-    // 4. Fallback: full name from document title (usually "Name | LinkedIn").
+    // 3. Name from document title ("Name | LinkedIn") as last resort.
     if (!info.fullName) {
       const title = document.title || '';
       const name = title.split('|')[0].trim();
       if (name && !/linkedin/i.test(name)) info.fullName = name;
     }
 
-    // 5. Inline page data for company name (worksFor / companyName).
-    if (!info.company) {
-      const html = document.documentElement.innerHTML || '';
-      const m = html.match(/"companyName"\s*:\s*"([^"]+)"/) ||
-                html.match(/"worksFor"\s*:\s*\{[^}]*"name"\s*:\s*"([^"]+)"/);
-      if (m) {
-        try {
-          info.company = decodeURIComponent(m[1]);
-        } catch {
-          info.company = m[1];
-        }
-      }
-    }
+    // Company: ordered from most-reliable/always-rendered to least.
+    info.company =
+      companyFromHeadline() ||
+      companyFromTopCard() ||
+      companyFromExperienceSection() ||
+      companyFromJsonLd() ||
+      companyFromMetaDescription() ||
+      companyFromInlineData();
 
     if (info.fullName) {
       info.firstName = info.fullName.split(/\s+/)[0];
@@ -1143,7 +1263,13 @@
     if (request.action === 'extractProfileInfo') {
       console.log('[LDMS] extractProfileInfo on tab', window.location.href);
       try {
+        // Trigger lazy-loading of lower profile sections (experience etc.) so
+        // they are in the DOM by the time the background retries extraction.
+        try {
+          window.scrollTo(0, Math.floor(document.body.scrollHeight / 2));
+        } catch { /* ignore */ }
         const info = extractProfileInfoFromPage();
+        console.log('[LDMS] extractProfileInfo result:', JSON.stringify(info));
         sendResponse({ success: true, ...info });
       } catch (err) {
         sendResponse({ success: false, error: String(err && err.message || err) });
