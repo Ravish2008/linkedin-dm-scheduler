@@ -112,10 +112,12 @@ const Campaign = (() => {
 
   /**
    * Effective daily cap given warm-up ramp: 5/day on day 1, ramping linearly
-   * to the full cap over 5 days.
+   * to the full cap over 5 days. Returns null when no daily cap is set
+   * (unlimited); warm-up does not apply without a cap to ramp to.
    */
   function effectiveDailyCap(campaign) {
     const settings = campaign.settings || DEFAULT_CAMPAIGN_SETTINGS;
+    if (settings.dailyCap == null) return null; // unlimited
     if (!settings.warmup || !campaign.warmupStartAt) {
       return settings.dailyCap;
     }
@@ -160,7 +162,9 @@ const Campaign = (() => {
     const sentToday = campaign.dayKey === today ? campaign.sentToday || 0 : 0;
     const sentThisWeek = campaign.weekKey === thisWeek ? campaign.sentThisWeek || 0 : 0;
 
-    if (sentToday >= effectiveDailyCap(campaign)) {
+    // Caps are optional: null means unlimited — skip the check entirely.
+    const dailyCap = effectiveDailyCap(campaign);
+    if (dailyCap != null && sentToday >= dailyCap) {
       return {
         ok: false,
         reason: 'daily-cap',
@@ -168,7 +172,7 @@ const Campaign = (() => {
       };
     }
 
-    if (sentThisWeek >= settings.weeklyCap) {
+    if (settings.weeklyCap != null && sentThisWeek >= settings.weeklyCap) {
       return {
         ok: false,
         reason: 'weekly-cap',

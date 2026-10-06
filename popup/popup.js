@@ -940,11 +940,6 @@
   }
 
   function readCampaignSettingsFromForm() {
-    const clamp = (el, min, max, fallback) => {
-      let v = parseInt(el.value, 10);
-      if (isNaN(v)) v = fallback;
-      return Math.max(min, Math.min(max, v));
-    };
     // Delay inputs are a number + unit (seconds or minutes); store seconds.
     // Allowed: min delay 10 s – 30 min, max delay 30 s – 60 min.
     const toSeconds = (valueId, unitId, fallbackSec) => {
@@ -953,9 +948,17 @@
       const unitSec = $('#' + unitId).value === 'min' ? 60 : 1;
       return Math.round(n * unitSec);
     };
+    // Caps are optional: empty or <= 0 means unlimited (stored as null).
+    const optionalCap = (el, min, max) => {
+      const raw = String(el.value).trim();
+      if (!raw) return null;
+      let v = parseInt(raw, 10);
+      if (isNaN(v) || v <= 0) return null;
+      return Math.max(min, Math.min(max, v));
+    };
     return {
-      dailyCap: clamp($('#campaign-daily-cap'), 10, 100, 25),
-      weeklyCap: clamp($('#campaign-weekly-cap'), 50, 200, 100),
+      dailyCap: optionalCap($('#campaign-daily-cap'), 10, 100),
+      weeklyCap: optionalCap($('#campaign-weekly-cap'), 50, 200),
       minDelaySec: Math.max(10, Math.min(1800, toSeconds('campaign-min-delay', 'campaign-min-delay-unit', 180))),
       maxDelaySec: Math.max(30, Math.min(3600, toSeconds('campaign-max-delay', 'campaign-max-delay-unit', 480))),
       activeStart: $('#campaign-active-start').value || '09:00',
@@ -1017,8 +1020,8 @@
     $('#campaign-message').value = campaign.message || '';
     $('#campaign-recipients-input').value = '';
     const s = campaign.settings || {};
-    $('#campaign-daily-cap').value = s.dailyCap || 25;
-    $('#campaign-weekly-cap').value = s.weeklyCap || 100;
+    $('#campaign-daily-cap').value = s.dailyCap != null ? s.dailyCap : '';
+    $('#campaign-weekly-cap').value = s.weeklyCap != null ? s.weeklyCap : '';
     const delays = Campaign.delaySettings(s);
     setDelayInputs('campaign-min-delay', 'campaign-min-delay-unit', delays.minDelaySec);
     setDelayInputs('campaign-max-delay', 'campaign-max-delay-unit', delays.maxDelaySec);
@@ -1174,8 +1177,8 @@
     $('#campaign-message').value = '';
     $('#campaign-template-select').value = '';
     $('#campaign-warmup').checked = false;
-    $('#campaign-daily-cap').value = 25;
-    $('#campaign-weekly-cap').value = 100;
+    $('#campaign-daily-cap').value = '';
+    $('#campaign-weekly-cap').value = '';
     $('#campaign-min-delay').value = 3;
     $('#campaign-min-delay-unit').value = 'min';
     $('#campaign-max-delay').value = 8;
