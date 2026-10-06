@@ -1142,10 +1142,155 @@
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Voyager API extraction (primary).
+  //
+  // LinkedIn's internal Voyager endpoint returns structured profile data
+  // (firstName, lastName, position history with company names, and the
+  // fsd_profile URN), which is far more reliable than scraping the DOM —
+  // the experience section lazy-loads and selectors drift. The content
+  // script runs on linkedin.com so cookies are sent automatically; the CSRF
+  // token comes from the JSESSIONID cookie. DOM parsing below remains as a
+  // fallback for rate limiting / auth failures.
+  // ---------------------------------------------------------------------------
+
+  /** CSRF token from the JSESSIONID cookie (value may be quoted). */
+  function getLinkedInCsrfToken() {
+    const m = (document.cookie || '').match(/(?:^|;\s*)JSESSIONID="?([^";]+)"?/);
+    return m ? m[1] : null;
+  }
+
+  /** Profile slug (public identifier) from the current /in/{slug}/ URL. */
+  function getCurrentProfileSlug() {
+    const m = (window.location.pathname || '').match(/^\/in\/([^/?#]+)/);
+    return m ? m[1] : null;
+  }
+
+  /** Extract the internal profile ID from a LinkedIn URN string. */
+  function profileIdFromUrn(urn) {
+    const m = String(urn || '').match(
+      /urn:li:(?:fsd_profile|fs_mini_profile):([A-Za-z0-9_-]{10,})/
+    );
+    return m ? m[1] : null;
+  }
+
+  /**
+   * Normalize a Voyager API profile response into
+   * { profileId, firstName, lastName, fullName, company }.
+   * Handles both the plain shape (fields at top level, positionView nested)
+   * and the normalized shape ({ data, included } with Position entities).
+   */
+  function parseVoyagerProfile(json) {
+    if (!json || typeof json !== 'object') return null;
+
+    const nodes = [];
+    if (json.data && typeof json.data === 'object') nodes.push(json.data);
+    if (Array.isArray(json.included)) nodes.push(...json.included);
+    if (!nodes.length) nodes.push(json);
+
+    const info = { profileId: null, firstName: null, lastName: null, fullName: null, company: null };
+
+    // Profile node: carries the name fields.
+    const profile = nodes.find((n) => n && typeof n === 'object' && (n.firstName || n.lastName));
+    if (profile) {
+      info.firstName = profile.firstName || null;
+      info.lastName = profile.lastName || null;
+      info.fullName = [info.firstName, info.lastName].filter(Boolean).join(' ') || null;
+      info.profileId = profileIdFromUrn(profile.entityUrn || profile.objectUrn);
+    }
+    if (!info.profileId) {
+      for (const n of nodes) {
+        const id = n && profileIdFromUrn(n.entityUrn || n.objectUrn);
+        if (id) { info.profileId = id; break; }
+      }
+    }
+
+    // Company: current position (no endDate) — either nested positionView
+    // elements or normalized Position entities with a companyName.
+    const positions = [];
+    if (profile && profile.positionView && Array.isArray(profile.positionView.elements)) {
+      positions.push(...profile.positionView.elements);
+    }
+    for (const n of nodes) {
+      if (n && typeof n === 'object' && n !== profile &&
+          (n.companyName || (n.company && typeof n.company === 'object')) &&
+          (n.timePeriod !== undefined || n.companyName)) {
+        positions.push(n);
+      }
+    }
+    const current =
+      positions.find((p) => !(p.timePeriod && p.timePeriod.endDate)) || positions[0];
+    if (current) {
+      info.company =
+        current.companyName ||
+        (current.company && current.company.name) ||
+        (current.company && current.company.miniCompany && current.company.miniCompany.name) ||
+        null;
+    }
+
+    if (!info.firstName && !info.company && !info.profileId) return null;
+    return info;
+  }
+
+  /**
+   * Fetch profile data from LinkedIn's Voyager API.
+   * Returns the normalized info object, or null on any failure (no CSRF
+   * token, HTTP error, timeout, malformed JSON).
+   */
+  async function fetchProfileFromVoyager(slug) {
+    const csrf = getLinkedInCsrfToken();
+    if (!csrf) return null;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    try {
+      const resp = await fetch(
+        'https://www.linkedin.com/voyager/api/identity/profiles/' + encodeURIComponent(slug),
+        {
+          headers: {
+            accept: 'application/vnd.linkedin.normalized+json+2.1',
+            'csrf-token': csrf,
+            'x-restli-protocol-version': '2.0.0'
+          },
+          credentials: 'same-origin',
+          signal: controller.signal
+        }
+      );
+      if (!resp.ok) return null;
+      const json = await resp.json();
+      return parseVoyagerProfile(json);
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Extract profile info for campaign merge fields. Tries the Voyager API
+   * first (structured, reliable), backfilling any missing fields from the
+   * DOM parser; falls back to DOM-only extraction when the API fails.
+   */
+  async function extractProfileInfo() {
+    const slug = getCurrentProfileSlug();
+    const api = slug ? await fetchProfileFromVoyager(slug) : null;
+    const dom = extractProfileInfoFromPage();
+    if (api) {
+      return {
+        profileId: api.profileId || dom.profileId,
+        fullName: api.fullName || dom.fullName,
+        firstName: api.firstName || dom.firstName,
+        company: api.company || dom.company,
+        source: 'voyager'
+      };
+    }
+    return { ...dom, source: 'dom' };
+  }
+
   /**
    * Extract profile info for campaign merge fields:
    * { profileId, fullName, firstName, company }.
    * Reads the profile page's heading, headline, JSON-LD, and inline data.
+   * This is the DOM fallback for extractProfileInfo().
    */
   function extractProfileInfoFromPage() {
     const info = {
@@ -1247,34 +1392,48 @@
 
     if (request.action === 'extractProfileId') {
       console.log('[LDMS] extractProfileId on tab', window.location.href);
-      try {
-        const profileId = extractProfileIdFromPage();
-        if (profileId) {
-          sendResponse({ success: true, profileId });
-        } else {
-          sendResponse({ success: false, error: 'Profile ID not found on page' });
+      (async () => {
+        try {
+          // Try the Voyager API first — the profile URN comes straight from
+          // the structured response; fall back to DOM scraping.
+          const slug = getCurrentProfileSlug();
+          if (slug) {
+            const api = await fetchProfileFromVoyager(slug);
+            if (api && api.profileId) {
+              sendResponse({ success: true, profileId: api.profileId });
+              return;
+            }
+          }
+          const profileId = extractProfileIdFromPage();
+          if (profileId) {
+            sendResponse({ success: true, profileId });
+          } else {
+            sendResponse({ success: false, error: 'Profile ID not found on page' });
+          }
+        } catch (err) {
+          sendResponse({ success: false, error: String(err && err.message || err) });
         }
-      } catch (err) {
-        sendResponse({ success: false, error: String(err && err.message || err) });
-      }
-      return false;
+      })();
+      return true;
     }
 
     if (request.action === 'extractProfileInfo') {
       console.log('[LDMS] extractProfileInfo on tab', window.location.href);
-      try {
-        // Trigger lazy-loading of lower profile sections (experience etc.) so
-        // they are in the DOM by the time the background retries extraction.
+      (async () => {
         try {
-          window.scrollTo(0, Math.floor(document.body.scrollHeight / 2));
-        } catch { /* ignore */ }
-        const info = extractProfileInfoFromPage();
-        console.log('[LDMS] extractProfileInfo result:', JSON.stringify(info));
-        sendResponse({ success: true, ...info });
-      } catch (err) {
-        sendResponse({ success: false, error: String(err && err.message || err) });
-      }
-      return false;
+          // Trigger lazy-loading of lower profile sections (experience etc.)
+          // in case the DOM fallback is needed.
+          try {
+            window.scrollTo(0, Math.floor(document.body.scrollHeight / 2));
+          } catch { /* ignore */ }
+          const info = await extractProfileInfo();
+          console.log('[LDMS] extractProfileInfo result:', JSON.stringify(info));
+          sendResponse({ success: true, ...info });
+        } catch (err) {
+          sendResponse({ success: false, error: String(err && err.message || err) });
+        }
+      })();
+      return true;
     }
   });
 })();
