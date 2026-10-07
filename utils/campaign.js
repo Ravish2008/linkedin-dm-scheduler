@@ -224,12 +224,33 @@ const Campaign = (() => {
   }
 
   /**
+   * Extract custom double-brace placeholders ({{company}}, {{role}}, ...)
+   * from a campaign message. Returns unique keys in order of appearance.
+   */
+  function extractCustomPlaceholders(text) {
+    const names = new Set();
+    let match;
+    const re = /\{\{([a-zA-Z0-9_]+)\}\}/g;
+    while ((match = re.exec(String(text || ''))) !== null) {
+      names.add(match[1]);
+    }
+    return Array.from(names);
+  }
+
+  /**
    * Apply merge fields to a campaign message.
-   * Supported: {name}.
+   * {name} is auto-filled from the recipient's profile; custom {{placeholders}}
+   * are filled from the recipient's user-entered per-recipient values
+   * (missing values become blank). Custom placeholders are replaced FIRST so
+   * that a literal {{name}} is not partially consumed by the single-brace
+   * {name} replacement.
    */
   function applyMergeFields(text, recipient) {
     const fullName = recipient.name || recipient.fullName || '';
+    const values = (recipient && recipient.placeholders) || {};
     return String(text || '')
+      .replace(/\{\{([a-zA-Z0-9_]+)\}\}/g, (match, key) =>
+        values[key] != null ? String(values[key]) : '')
       .replace(/\{name\}/gi, fullName);
   }
 
@@ -271,6 +292,7 @@ const Campaign = (() => {
   return {
     DEFAULT_CAMPAIGN_SETTINGS,
     delaySettings,
+    extractCustomPlaceholders,
     gaussianDelayMs,
     randInt,
     dayKey,

@@ -286,6 +286,14 @@
   }
 
   /**
+   * Attribute-safe escaping (escapeHtml does not escape quotes, and the
+   * textContent->innerHTML trick leaves " intact).
+   */
+  function escapeAttr(str) {
+    return escapeHtml(str).replace(/"/g, '&quot;');
+  }
+
+  /**
    * Extract the LinkedIn profile slug from a profile URL.
    * Accepts urls like https://www.linkedin.com/in/username/ or linkedin.com/in/username.
    */
@@ -876,7 +884,12 @@
     if (!selected || !selected.value) return;
     const templates = await Storage.getTemplates();
     const template = templates.find((t) => t.id === selected.value);
-    if (template) $('#campaign-message').value = template.body;
+    if (template) {
+      $('#campaign-message').value = template.body;
+      // The new message may introduce custom {{placeholders}} — re-render
+      // the per-recipient input fields.
+      renderCampaignRecipientPreview();
+    }
   }
 
   function onAddCampaignRecipients() {
@@ -891,7 +904,7 @@
     for (const r of parsed) {
       if (existing.has(r.slug)) continue;
       existing.add(r.slug);
-      stagedRecipients.push({ ...r, id: Storage.generateId() });
+      stagedRecipients.push({ ...r, id: Storage.generateId(), placeholders: {} });
       added++;
     }
     input.value = '';
@@ -907,13 +920,39 @@
     $('#campaign-recipient-count').textContent = stagedRecipients.length;
     $('#campaign-recipient-empty').classList.toggle('hidden', stagedRecipients.length > 0);
 
+    // Custom {{placeholders}} in the message get per-recipient input fields.
+    const customKeys = Campaign.extractCustomPlaceholders($('#campaign-message').value);
+
     for (const r of stagedRecipients) {
       const li = document.createElement('li');
-      li.className = 'recipient-chip';
-      li.innerHTML = `
-        <span class="recipient-chip-slug" title="${escapeHtml(r.profileUrl)}">${escapeHtml(r.slug)}</span>
-        <button type="button" class="recipient-remove" data-id="${r.id}" aria-label="Remove">×</button>
-      `;
+
+      if (customKeys.length === 0) {
+        // Compact chip layout when there are no per-recipient fields.
+        li.className = 'recipient-chip';
+        li.innerHTML = `
+          <span class="recipient-chip-slug" title="${escapeAttr(r.profileUrl)}">${escapeHtml(r.slug)}</span>
+          <button type="button" class="recipient-remove" data-id="${r.id}" aria-label="Remove">×</button>
+        `;
+      } else {
+        // Chip + per-recipient custom placeholder inputs.
+        li.className = 'recipient-item';
+        const fields = customKeys.map((key) => `
+          <label class="recipient-placeholder-field">
+            <span>${escapeHtml(key)}</span>
+            <input type="text" class="recipient-placeholder-input"
+                   data-recipient-id="${r.id}"
+                   data-placeholder-key="${escapeAttr(key)}"
+                   value="${escapeAttr((r.placeholders && r.placeholders[key]) || '')}"
+                   placeholder="${escapeAttr(key)}" />
+          </label>`).join('');
+        li.innerHTML = `
+          <div class="recipient-chip">
+            <span class="recipient-chip-slug" title="${escapeAttr(r.profileUrl)}">${escapeHtml(r.slug)}</span>
+            <button type="button" class="recipient-remove" data-id="${r.id}" aria-label="Remove">×</button>
+          </div>
+          <div class="recipient-placeholders">${fields}</div>
+        `;
+      }
       list.appendChild(li);
     }
   }
@@ -993,6 +1032,25 @@
       return null;
     }
 
+    // Custom {{placeholders}} need a value for every staged recipient — a
+    // blank would silently strip them from the sent message.
+    const customKeys = Campaign.extractCustomPlaceholders(message);
+    if (customKeys.length) {
+      const missing = stagedRecipients.filter((r) =>
+        customKeys.some((k) => !String((r.placeholders && r.placeholders[k]) || '').trim())
+      );
+      if (missing.length) {
+        const missingKey = customKeys.find((k) =>
+          !String((missing[0].placeholders && missing[0].placeholders[k]) || '').trim()
+        );
+        showToast(
+          `Fill in "{{${missingKey}}}" for ${missing.length} recipient${missing.length === 1 ? '' : 's'} (e.g. ${missing[0].slug}).`,
+          'error'
+        );
+        return null;
+      }
+    }
+
     const settings = readCampaignSettingsFromForm();
     if (settings.minDelaySec >= settings.maxDelaySec) {
       showToast('Min delay must be less than max delay.', 'error');
@@ -1035,7 +1093,8 @@
     const match = templates.find((t) => t.body === campaign.message);
     $('#campaign-template-select').value = match ? match.id : '';
 
-    // Re-stage unfinished recipients; keep resolved profile IDs for reuse.
+    // Re-stage unfinished recipients; keep resolved profile IDs and
+    // per-recipient custom placeholder values for reuse.
     stagedRecipients = (campaign.recipients || [])
       .filter((r) => r.status === 'pending' || r.status === 'failed' || r.status === 'sending')
       .map((r) => ({
@@ -1043,7 +1102,8 @@
         profileUrl: r.profileUrl,
         slug: r.slug,
         name: r.slug,
-        profileId: r.profileId || null
+        profileId: r.profileId || null,
+        placeholders: { ...(r.placeholders || {}) }
       }));
     renderCampaignRecipientPreview();
 
@@ -1088,6 +1148,7 @@
           name: r.slug,
           status: 'pending',
           profileId: r.profileId || (prev && prev.profileId) || null,
+          placeholders: { ...(r.placeholders || {}) },
           error: null,
           sentAt: null
         };
@@ -1127,6 +1188,7 @@
       name: r.slug,
       status: 'pending',
       profileId: null,
+      placeholders: { ...(r.placeholders || {}) },
       error: null,
       sentAt: null
     }));
@@ -1340,6 +1402,27 @@
       renderCampaignRecipientPreview();
       // stagedRecipients changed programmatically; persist.
       saveFormStateNow();
+    });
+
+    // Write per-recipient custom {{placeholder}} edits back into the staged
+    // recipient objects. This listener sits on the preview container (an
+    // ancestor of the inputs), so it runs BEFORE the document-level
+    // form-state save listener during bubbling — values are written back
+    // before the state is collected.
+    $('#campaign-recipient-preview').addEventListener('input', (e) => {
+      const input = e.target.closest('.recipient-placeholder-input');
+      if (!input) return;
+      const recipient = stagedRecipients.find((r) => r.id === input.dataset.recipientId);
+      if (!recipient) return;
+      recipient.placeholders = recipient.placeholders || {};
+      recipient.placeholders[input.dataset.placeholderKey] = input.value;
+    });
+
+    // Editing the message may add/remove custom {{placeholders}} — refresh
+    // the per-recipient input fields. (Values live on the staged recipient
+    // objects, so re-rendering never loses them.)
+    $('#campaign-message').addEventListener('input', () => {
+      renderCampaignRecipientPreview();
     });
 
     // Select a saved campaign to view its dashboard, or load one into the

@@ -540,6 +540,31 @@ hr {
   color: var(--danger);
 }
 
+/* Recipients with custom {{placeholder}} inputs: full-width card layout. */
+.recipient-item {
+  flex-basis: 100%;
+}
+
+.recipient-placeholders {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.recipient-placeholder-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.recipient-placeholder-field input {
+  font-size: 12px;
+  padding: 4px 6px;
+}
+
 .progress-wrap {
   display: flex;
   flex-direction: column;
