@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Extension build artifacts
+*.crx
+*.pem
+*.zip
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.*
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+
+# Local test scratch
+.test-deps/

@@ -1,84 +1,128 @@
-# LinkedIn DM Scheduler
+# 📅 LinkedIn DM Scheduler
 
-A production-ready Chrome Extension that lets you schedule LinkedIn direct messages and automatically sends them at the chosen date and time.
+> A Chrome extension for scheduling and automating LinkedIn direct messages — from single scheduled DMs to full bulk-messaging campaigns with human-like pacing.
 
-## Features
+[![Manifest V3](https://img.shields.io/badge/Manifest-V3-34A853?logo=googlechrome&logoColor=white)](https://developer.chrome.com/docs/extensions/develop)
+[![Chrome](https://img.shields.io/badge/Chrome-114%2B-4285F4?logo=googlechrome&logoColor=white)](https://www.google.com/chrome/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/Version-1.0.0-0A66C2?logo=linkedin&logoColor=white)](manifest.json)
 
-- **Schedule Messages** — Pick a recipient, message, date, time, and timezone.
-- **Message Queue** — View, edit, or delete pending messages.
-- **Recurring Messages** — Weekly or monthly recurring sends.
-- **Message Templates** — Save reusable templates with `{name}` and other placeholders.
-- **Contact Autocomplete** — Refresh your LinkedIn connections list directly from the messaging page.
-- **Send History & Dashboard** — Track sent/failed messages with success-rate stats.
-- **Browser Notifications** — Get notified when a message is sent or fails.
-- **Import / Export** — Backup and restore scheduled messages and templates as JSON.
-- **Timezone Support** — Detects your local timezone and lets you override it per message.
-- **Dark / Light Mode** — Toggle between themes in Settings.
+## ✨ Features
 
-## Installation (Developer Mode)
+### ⏰ Scheduled Messages
+- Set a specific **date, time, and timezone** per message — sent automatically when due
+- Optional **weekly / monthly recurrence**
+- **Queue** view with edit / delete for pending messages, **History** with success-rate stats
 
-1. Open Chrome and navigate to `chrome://extensions/`.
-2. Enable **Developer mode** in the top-right corner.
-3. Click **Load unpacked**.
-4. Select the `linkedin-dm-scheduler` folder.
-5. The extension icon will appear in your toolbar.
+### 📣 Bulk Messaging Campaigns
+- Paste a list of **LinkedIn profile URLs** — each is parsed into a tracked recipient
+- Configurable pacing to mimic human behavior:
+  | Setting | Range | Default |
+  |---|---|---|
+  | Delay between messages | 10 s – 30 min (min) / 30 s – 60 min (max) | 3 – 8 min |
+  | Active hours | any start / end time (overnight windows supported) | 09:00 – 18:00 |
+  | Daily cap *(optional)* | 10 – 100, or **unlimited** | unlimited |
+  | Weekly cap *(optional)* | 50 – 200, or **unlimited** | unlimited |
+  | Warm-up mode | 5 / day ramping to full daily cap over 5 days | off |
 
-## Permissions
+### 🛡️ Anti-Detection Pacing
+- **Gaussian-distributed delays** (not uniform) between min and max
+- **Session breaks** — after every 8–12 messages, a 15–30 min pause
+- **Error cooldown** — a failed send pauses the campaign for 1–2 hours
+- **Warm-up mode** — start slow (5 / day) and ramp up to your daily cap over 5 days
 
-The extension requests only what it needs:
+### 🔖 Merge Fields
+- `{name}` — auto-filled from each recipient's LinkedIn profile
+- `{{company}}`, `{{role}}`, … — **custom per-recipient placeholders**: type them in your message (or use a template) and fill in the value for each recipient right in the campaign builder
 
-- `storage` — Save messages, templates, and settings locally.
-- `alarms` — Check every minute for due messages.
-- `notifications` — Show send/failure notifications.
-- `activeTab` — Interact with the current LinkedIn tab when sending.
-- Host permission for `https://www.linkedin.com/messaging/*` — Automate message sending on LinkedIn.
+### 📋 Template Management
+- Save / edit / delete reusable message templates
+- Templates can contain `{name}` and any custom `{{placeholders}}`
 
-## Usage
+### 📊 Campaign Dashboard
+- Live **progress bar** and stats (sent / total, failures, skips)
+- **Per-recipient status** — pending, sending, sent, failed, skipped
+- **Start / Pause / Resume / Cancel** controls; edit draft or paused campaigns without losing sent progress
 
-1. Open the extension popup and go to the **Schedule** tab.
-2. Type or select a recipient, write your message (or pick a template), choose the date/time, and set the timezone.
-3. Click **Save Message**.
-4. The background service worker will automatically send the message when the time arrives.
-5. View pending items in **Queue**, sent/failed items in **History**, and manage templates in **Templates**.
+### 🧠 Smart Profile Targeting
+- **Profile ID caching via compose URL** — resolves each recipient's internal LinkedIn profile ID once (cached on the recipient), then opens the pre-filled `linkedin.com/messaging/compose/?profileUrn=…` page: no fragile name-search flow
+- **Voyager API profile data** — reads structured name / profile data from LinkedIn's internal API (with a multi-strategy DOM parser as fallback) for reliable merge-field values
 
-## File Structure
+### 🧰 Quality-of-Life
+- **Form state persistence** — everything you type survives popup close / reopen (including campaign drafts and per-recipient placeholder values)
+- **Auto tab cleanup** — tabs opened by the extension for sending are closed automatically after each send; your own tabs are never touched
+- 🌙 **Dark / light mode** toggle
+- 📤 **Import / Export** all messages, templates, and campaigns as JSON backup
+- 🔔 **Browser notifications** on send success or failure
+
+## 🚀 Installation
+
+1. Download or clone this repository.
+2. Open Chrome and go to `chrome://extensions/`.
+3. Enable **Developer mode** (top-right toggle).
+4. Click **Load unpacked**.
+5. Select the `linkedin-dm-scheduler` folder.
+6. Pin the extension to your toolbar — you're done.
+
+> **Note:** Log in to LinkedIn in the same browser before scheduling sends. The extension must remain installed and enabled (and Chrome running) for scheduled messages to fire.
+
+## 📖 Usage Guide
+
+### ⏰ Schedule a Single Message
+
+1. Click the extension icon and open the **Schedule** tab.
+2. Choose a recipient by **name** (autocomplete from your connections) and/or paste their **LinkedIn profile URL** — the URL is strongly recommended since it targets the exact person.
+3. Write your message or pick a template; add any single-brace `{placeholders}` and fill in their values.
+4. Set the **date and time** (your local timezone is shown; override it if needed) and an optional recurrence.
+5. Click **Save Message** — the service worker sends it automatically when due.
+
+### 📣 Create a Campaign
+
+1. Open the **Campaign** tab and name your campaign.
+2. Paste **LinkedIn profile URLs** (one per line) into the recipients box and click **Add** — each appears as a removable chip.
+3. Write your message or pick a template. Any custom `{{placeholders}}` (like `{{company}}` or `{{role}}`) are detected automatically, and an input field for each appears under every recipient — fill in the per-recipient values.
+4. Configure **delays** (number + seconds/minutes unit), **active hours**, **optional daily / weekly caps**, and **warm-up mode**.
+5. Click **Create campaign** — it starts running immediately. Track progress on the dashboard; **Pause / Resume / Cancel** anytime, or click **Edit** on a draft / paused campaign to change anything without losing already-sent recipients.
+
+### 📋 Use Templates with Placeholders
+
+1. Open the **Templates** tab and create a template — e.g. `Hi {name}, great connecting! I saw you're a {{role}} at {{company}}.`
+2. In the **Schedule** tab, select the template and fill in the single-brace placeholder values.
+3. In the **Campaign** tab, select the template — `{name}` is filled automatically from each profile, and each `{{custom}}` field gets its own per-recipient input.
+
+## 📁 Project Structure
 
 ```
 linkedin-dm-scheduler/
-├── manifest.json
+├── manifest.json               # Extension manifest (MV3)
 ├── popup/
-│   ├── popup.html
-│   ├── popup.css
-│   └── popup.js
+│   ├── popup.html              # Popup UI (Schedule, Queue, Templates, History, Campaign, Settings tabs)
+│   ├── popup.css               # Light/dark theme styles
+│   └── popup.js                # UI logic, campaign builder, form-state persistence
 ├── background/
-│   └── service-worker.js
+│   └── service-worker.js       # Scheduling engine, campaign executor, send orchestration
 ├── content/
-│   └── linkedin.js
+│   └── linkedin.js             # LinkedIn automation: compose-URL send flow, Voyager + DOM profile extraction
 ├── utils/
-│   ├── storage.js
-│   └── templates.js
-├── assets/
-│   └── icons/
-│       ├── icon16.svg
-│       ├── icon48.svg
-│       └── icon128.svg
-└── README.md
+│   ├── storage.js              # chrome.storage.local CRUD (messages, templates, campaigns, settings)
+│   ├── templates.js            # Template placeholder extraction / substitution
+│   └── campaign.js             # Pure campaign logic: Gaussian delays, caps, active hours, warm-up, merge fields
+└── assets/
+    └── icons/                  # SVG icons (16 / 48 / 128 px)
 ```
 
-## How It Works
+## 🛠️ Tech Stack
 
-- **Background Service Worker** (`background/service-worker.js`) registers a one-minute alarm. On each tick it loads pending messages and dispatches any that are due to a LinkedIn messaging tab.
-- **Content Script** (`content/linkedin.js`) runs on `https://www.linkedin.com/messaging/*`. It searches for the recipient, opens the conversation, types the message, clicks send, and reports the result back to the service worker.
-- **Popup** (`popup/`) provides the full UI for scheduling, queue management, templates, history, settings, and import/export.
-- **Storage** (`utils/storage.js`) persists all data using `chrome.storage.local`.
-- **Templates** (`utils/templates.js`) extract `{key}` placeholders and substitute them when a message is saved.
+- **Manifest V3** Chrome extension
+- **Chrome APIs:** `chrome.storage.local` (persistence), `chrome.alarms` (1-minute scheduling tick), `chrome.scripting` (content-script injection, all frames), `chrome.tabs` (tab lifecycle + auto-cleanup), `chrome.notifications` (send results), `chrome.runtime` messaging
+- **Vanilla HTML / CSS / JS** — no build step, no dependencies
+- **LinkedIn integration:** compose-URL message flow, Voyager identity API (with CSRF token from the `JSESSIONID` cookie) and multi-strategy DOM fallback, main-world script injection for Ember-compatible typing
+- All data stays in `chrome.storage.local` — nothing leaves your browser
 
-## Notes
+## ⚠️ Disclaimer
 
-- The extension must remain enabled for scheduled messages to send.
-- LinkedIn’s DOM changes from time to time; the content script includes multiple selector fallbacks and retry logic to stay resilient.
-- Keep Chrome open and, if necessary, allow it to run in the background for the alarm to fire reliably.
+This extension automates activity on LinkedIn and is **not affiliated with or endorsed by LinkedIn**. Automating messages may violate LinkedIn's User Agreement and could result in your account being **restricted or banned**. Use it at your own risk, keep volumes modest, and respect the platform's limits — the pacing features exist to help, but no tool can guarantee account safety.
 
-## License
+## 📄 License
 
 MIT
