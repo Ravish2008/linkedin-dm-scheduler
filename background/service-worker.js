@@ -5,9 +5,25 @@
  * - Updates status, recurs recurring messages, and shows notifications.
  */
 
-// Use chrome.runtime.getURL() for absolute extension URLs: relative '../'
-// paths in importScripts resolve unreliably inside MV3 service workers.
-importScripts(chrome.runtime.getURL('utils/storage.js'), chrome.runtime.getURL('utils/campaign.js'));
+// In MV3 service workers, importScripts paths may resolve against the
+// extension root OR against this file's directory depending on the Chrome
+// version. Try the root-relative form first, then fall back to the
+// script-relative form. Each util is imported one at a time and guarded by a
+// typeof check so a partially loaded script is never imported twice.
+if (typeof Storage === 'undefined') {
+  try {
+    importScripts('utils/storage.js');
+  } catch (e) {
+    importScripts('../utils/storage.js');
+  }
+}
+if (typeof Campaign === 'undefined') {
+  try {
+    importScripts('utils/campaign.js');
+  } catch (e) {
+    importScripts('../utils/campaign.js');
+  }
+}
 
 const ALARM_NAME = 'check-scheduled-messages';
 const CAMPAIGN_ALARM_NAME = 'campaign-engine-tick';
