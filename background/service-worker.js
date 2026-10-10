@@ -5,7 +5,9 @@
  * - Updates status, recurs recurring messages, and shows notifications.
  */
 
-importScripts('../utils/storage.js', '../utils/campaign.js');
+// Use chrome.runtime.getURL() for absolute extension URLs: relative '../'
+// paths in importScripts resolve unreliably inside MV3 service workers.
+importScripts(chrome.runtime.getURL('utils/storage.js'), chrome.runtime.getURL('utils/campaign.js'));
 
 const ALARM_NAME = 'check-scheduled-messages';
 const CAMPAIGN_ALARM_NAME = 'campaign-engine-tick';
