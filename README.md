@@ -108,7 +108,7 @@ linkedin-dm-scheduler/
 │   ├── templates.js            # Template placeholder extraction / substitution
 │   └── campaign.js             # Pure campaign logic: Gaussian delays, caps, active hours, warm-up, merge fields
 └── assets/
-    └── icons/                  # SVG icons (16 / 48 / 128 px)
+    └── icons/                  # PNG icons (16 / 48 / 128 px)
 ```
 
 ## 🛠️ Tech Stack

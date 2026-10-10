@@ -806,7 +806,7 @@ function showNotification(title, message) {
     `lids-${Date.now()}`,
     {
       type: 'basic',
-      iconUrl: 'assets/icons/icon48.svg',
+      iconUrl: 'assets/icons/icon48.png',
       title,
       message
     },
