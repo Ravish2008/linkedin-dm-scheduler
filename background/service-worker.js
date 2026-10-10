@@ -5,24 +5,16 @@
  * - Updates status, recurs recurring messages, and shows notifications.
  */
 
-// In MV3 service workers, importScripts paths may resolve against the
-// extension root OR against this file's directory depending on the Chrome
-// version. Try the root-relative form first, then fall back to the
-// script-relative form. Each util is imported one at a time and guarded by a
-// typeof check so a partially loaded script is never imported twice.
-if (typeof Storage === 'undefined') {
-  try {
-    importScripts('utils/storage.js');
-  } catch (e) {
-    importScripts('../utils/storage.js');
-  }
+try {
+  importScripts('/utils/storage.js');
+} catch (e) {
+  console.error('Failed to load storage.js:', e);
 }
-if (typeof Campaign === 'undefined') {
-  try {
-    importScripts('utils/campaign.js');
-  } catch (e) {
-    importScripts('../utils/campaign.js');
-  }
+
+try {
+  importScripts('/utils/campaign.js');
+} catch (e) {
+  console.error('Failed to load campaign.js:', e);
 }
 
 const ALARM_NAME = 'check-scheduled-messages';
