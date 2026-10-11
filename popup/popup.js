@@ -1201,12 +1201,9 @@
       status: 'draft',
       sentToday: 0,
       sentThisWeek: 0,
-      sessionCount: 0,
       dayKey: null,
       weekKey: null,
       nextSendAt: null,
-      cooldownUntil: null,
-      nextBreakAt: Campaign.randInt(8, 12),
       warmupStartAt: null,
       lastError: null
     });

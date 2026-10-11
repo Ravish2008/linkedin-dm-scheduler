@@ -55,13 +55,6 @@ const Campaign = (() => {
     return Math.round(sample * 1000);
   }
 
-  /**
-   * Uniform random integer between min and max (inclusive).
-   */
-  function randInt(min, max) {
-    return Math.floor(Math.random() * (max - min + 1)) + min;
-  }
-
   function dayKey(ts) {
     return new Date(ts).toISOString().slice(0, 10);
   }
@@ -140,14 +133,6 @@ const Campaign = (() => {
       return { ok: false, reason: 'not-running', retryAfterMs: 60000 };
     }
 
-    if (campaign.cooldownUntil && now < campaign.cooldownUntil) {
-      return {
-        ok: false,
-        reason: 'cooldown',
-        retryAfterMs: campaign.cooldownUntil - now
-      };
-    }
-
     if (!isWithinActiveHours(now, settings.activeStart, settings.activeEnd)) {
       return {
         ok: false,
@@ -188,39 +173,12 @@ const Campaign = (() => {
   }
 
   /**
-   * Compute the delay after a successful send: gaussian inter-message delay,
-   * plus a 15–30 min session break after every 8–12 sends.
-   * Returns { delayMs, takeBreak, nextBreakAt }.
+   * Compute the gaussian inter-message delay after a send (milliseconds).
    */
   function nextDelayAfterSend(campaign) {
     const settings = campaign.settings || DEFAULT_CAMPAIGN_SETTINGS;
     const delays = delaySettings(settings);
-    const sessionCount = (campaign.sessionCount || 0) + 1;
-    const breakAt = campaign.nextBreakAt || randInt(8, 12);
-
-    if (sessionCount >= breakAt) {
-      const breakMs = randInt(15, 30) * 60000;
-      return {
-        delayMs: breakMs,
-        takeBreak: true,
-        sessionCount: 0,
-        nextBreakAt: randInt(8, 12)
-      };
-    }
-
-    return {
-      delayMs: gaussianDelayMs(delays.minDelaySec, delays.maxDelaySec),
-      takeBreak: false,
-      sessionCount,
-      nextBreakAt: breakAt
-    };
-  }
-
-  /**
-   * Cooldown duration after a failed send: 1–2 hours.
-   */
-  function errorCooldownMs() {
-    return randInt(60, 120) * 60000;
+    return gaussianDelayMs(delays.minDelaySec, delays.maxDelaySec);
   }
 
   /**
@@ -294,7 +252,6 @@ const Campaign = (() => {
     delaySettings,
     extractCustomPlaceholders,
     gaussianDelayMs,
-    randInt,
     dayKey,
     weekKey,
     isWithinActiveHours,
@@ -302,7 +259,6 @@ const Campaign = (() => {
     effectiveDailyCap,
     canSendNow,
     nextDelayAfterSend,
-    errorCooldownMs,
     applyMergeFields,
     extractProfileSlug,
     parseRecipientUrls

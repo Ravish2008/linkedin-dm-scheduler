@@ -27,8 +27,6 @@
 
 ### 🛡️ Anti-Detection Pacing
 - **Gaussian-distributed delays** (not uniform) between min and max
-- **Session breaks** — after every 8–12 messages, a 15–30 min pause
-- **Error cooldown** — a failed send pauses the campaign for 1–2 hours
 - **Warm-up mode** — start slow (5 / day) and ramp up to your daily cap over 5 days
 
 ### 🔖 Merge Fields

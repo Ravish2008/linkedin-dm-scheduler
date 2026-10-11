@@ -166,7 +166,7 @@ async function campaignEngineTick() {
 }
 
 /**
- * Advance a single campaign: respect caps/hours/cooldown, send the next
+ * Advance a single campaign: respect caps/hours, send the next
  * pending recipient, then schedule the following send.
  */
 async function advanceCampaign(campaignId) {
@@ -189,7 +189,7 @@ async function advanceCampaign(campaignId) {
   const now = Date.now();
   const gate = Campaign.canSendNow(campaign, now);
   if (!gate.ok) {
-    // Nothing to do this tick; nextSendAt/cooldown/caps will re-gate us.
+    // Nothing to do this tick; nextSendAt/caps will re-gate us.
     return;
   }
 
@@ -227,6 +227,9 @@ async function advanceCampaign(campaignId) {
   const sentToday = campaign.dayKey === today ? campaign.sentToday || 0 : 0;
   const sentThisWeek = campaign.weekKey === thisWeek ? campaign.sentThisWeek || 0 : 0;
 
+  // Inter-message delay applied after this send (success or failure).
+  const delayMs = Campaign.nextDelayAfterSend(campaign);
+
   if (result.success) {
     await updateCampaignRecipient(campaignId, recipient.id, { status: 'sent', sentAt: now, error: null });
 
@@ -245,43 +248,41 @@ async function advanceCampaign(campaignId) {
       campaignId
     });
 
-    const pacing = Campaign.nextDelayAfterSend(campaign);
     const updates = {
       dayKey: today,
       weekKey: thisWeek,
       sentToday: sentToday + 1,
       sentThisWeek: sentThisWeek + 1,
-      sessionCount: pacing.sessionCount,
-      nextBreakAt: pacing.nextBreakAt,
-      nextSendAt: now + pacing.delayMs,
+      nextSendAt: now + delayMs,
       lastError: null
     };
     await Storage.updateCampaign(campaignId, updates);
-
-    // Delays can now be configured in seconds, but the engine alarm only
-    // fires once a minute. For sub-minute delays, schedule a precise
-    // best-effort follow-up tick; the periodic alarm remains the backstop
-    // if the service worker is suspended before it fires.
-    if (pacing.delayMs < 60000) {
-      setTimeout(() => {
-        campaignEngineTick().catch((err) =>
-          console.error('[Campaign] Follow-up tick failed:', err)
-        );
-      }, pacing.delayMs);
-    }
   } else {
+    // A failed send no longer pauses the campaign — mark the recipient
+    // failed and move on to the next one after the normal delay.
     await updateCampaignRecipient(campaignId, recipient.id, {
       status: 'failed',
       error: result.error || 'Send failed'
     });
 
-    const cooldownMs = Campaign.errorCooldownMs();
     await Storage.updateCampaign(campaignId, {
       dayKey: today,
       weekKey: thisWeek,
-      cooldownUntil: now + cooldownMs,
+      nextSendAt: now + delayMs,
       lastError: result.error || 'Send failed'
     });
+  }
+
+  // Delays can now be configured in seconds, but the engine alarm only
+  // fires once a minute. For sub-minute delays, schedule a precise
+  // best-effort follow-up tick; the periodic alarm remains the backstop
+  // if the service worker is suspended before it fires.
+  if (delayMs < 60000) {
+    setTimeout(() => {
+      campaignEngineTick().catch((err) =>
+        console.error('[Campaign] Follow-up tick failed:', err)
+      );
+    }, delayMs);
   }
 }
 
@@ -432,9 +433,6 @@ async function startCampaign(id) {
   const updates = { status: 'running', lastError: null };
   if (!campaign.warmupStartAt && campaign.settings && campaign.settings.warmup) {
     updates.warmupStartAt = Date.now();
-  }
-  if (!campaign.nextBreakAt) {
-    updates.nextBreakAt = Campaign.randInt(8, 12);
   }
   updates.nextSendAt = Date.now(); // eligible immediately (gate still applies)
   await Storage.updateCampaign(id, updates);
