@@ -20,6 +20,4 @@ No data is sold, shared, or transferred to third parties.
 
 ## Contact
 
-For questions about this privacy policy, contact: **ravishhaider@example.com**
-
-> Please replace the email above with your real contact address before publishing to the Chrome Web Store.
+For questions about this privacy policy, contact: **ravish.dev7@gmail.com**
