@@ -4,7 +4,7 @@
 
 [![Manifest V3](https://img.shields.io/badge/Manifest-V3-34A853?logo=googlechrome&logoColor=white)](https://developer.chrome.com/docs/extensions/develop)
 [![Chrome](https://img.shields.io/badge/Chrome-114%2B-4285F4?logo=googlechrome&logoColor=white)](https://www.google.com/chrome/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: Proprietary](https://img.shields.io/badge/License-All%20Rights%20Reserved-red.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/Version-1.0.0-0A66C2?logo=linkedin&logoColor=white)](manifest.json)
 
 ## ✨ Features
@@ -123,4 +123,4 @@ This extension automates activity on LinkedIn and is **not affiliated with or en
 
 ## 📄 License
 
-MIT
+All Rights Reserved © 2026 Ravish Haider. See [LICENSE](LICENSE) for details.
